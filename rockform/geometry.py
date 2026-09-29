@@ -1,0 +1,293 @@
+from __future__ import annotations
+
+import numpy as np
+import trimesh
+from scipy.spatial import cKDTree
+from shapely.geometry import Polygon
+from shapely.ops import triangulate
+from rtree.index import Index, Property
+from .model import GeometryError, TaskContext, Hold
+
+
+def boundary_loops(mesh):
+    edges, counts = np.unique(np.sort(mesh.edges, axis=1), axis=0, return_counts=True)
+    if np.any(counts > 2):
+        raise GeometryError("This selection has overlapping/non-manifold edges. Clean it or select a smaller area.")
+    boundary = edges[counts == 1]
+    neighbors = {}
+    for a, b in boundary:
+        neighbors.setdefault(int(a), []).append(int(b))
+        neighbors.setdefault(int(b), []).append(int(a))
+    if any(len(v) != 2 for v in neighbors.values()):
+        raise GeometryError("The boundary branches or touches itself. Adjust the selection boundary.")
+    loops, remaining = [], set(neighbors)
+    while remaining:
+        start = min(remaining)
+        loop, previous, current = [start], -1, start
+        while True:
+            following = next(n for n in neighbors[current] if n != previous)
+            if following == start:
+                break
+            if following in loop:
+                raise GeometryError("The selection boundary intersects itself.")
+            loop.append(following)
+            previous, current = current, following
+        remaining.difference_update(loop)
+        loops.append(np.array(loop, dtype=int))
+    return loops
+
+
+def _plane_segment(triangle, normal, origin, eps):
+    distance = (triangle - origin) @ normal
+    points = [p for p, d in zip(triangle, distance) if abs(d) <= eps]
+    for a, b in ((0, 1), (1, 2), (2, 0)):
+        if distance[a] * distance[b] < -eps * eps:
+            points.append(triangle[a] + (triangle[b] - triangle[a]) * distance[a] / (distance[a] - distance[b]))
+    return np.asarray(points)
+
+
+def self_intersections(mesh, context=None, stop_after=1):
+    """Check triangle pairs, including folds sharing vertices; ignore valid adjacency."""
+    ctx = context or TaskContext()
+    tri = mesh.triangles
+    # Manifold's mesh exchange uses float32. Respect that precision when comparing planes.
+    eps = max(float(np.ptp(mesh.vertices, axis=0).max()) * 1e-6, 1e-6)
+    prop = Property()
+    prop.dimension = 3
+    lo, hi = tri.min(axis=1) - eps, tri.max(axis=1) + eps
+    bounds = np.hstack((lo, hi))
+    tree = Index(((i, tuple(b), None) for i, b in enumerate(bounds)), properties=prop)
+    normals = mesh.face_normals
+    face_indices = np.asarray(mesh.faces)
+    areas = np.asarray(mesh.area_faces)
+    hits = []
+    for i, t1 in enumerate(tri):
+        if i % 500 == 0:
+            ctx.step(75 + int(20 * i / max(len(tri), 1)), "Checking for intersecting surfaces…")
+        for j in tree.intersection(tuple(bounds[i])):
+            if j <= i:
+                continue
+            shared = np.intersect1d(face_indices[i], face_indices[j])
+            t2, n1, n2 = tri[j], normals[i], normals[j]
+            direction = np.cross(n1, n2)
+            length = np.linalg.norm(direction)
+            hit = False
+            # Use the larger triangle's plane: sliver triangle normals amplify float32 error.
+            coplanar = (np.max(np.abs((t2 - t1[0]) @ n1)) <= eps if areas[i] >= areas[j]
+                        else np.max(np.abs((t1 - t2[0]) @ n2)) <= eps)
+            if coplanar:
+                axes = [a for a in range(3) if a != np.argmax(np.abs(n1))]
+                p1, p2 = Polygon(t1[:, axes]), Polygon(t2[:, axes])
+                inter = p1.buffer(-eps).intersection(p2.buffer(-eps))
+                hit = inter.area > eps * eps
+            else:
+                if length < 1e-10:
+                    continue
+                if len(shared) >= 2:
+                    continue  # Noncoplanar planes meet only on their common edge.
+                # Do not snap near-plane vertices onto a long intersection segment.
+                # This matters for the very narrow triangles formed around drilled seats.
+                a = _plane_segment(t1, n2, t2[0], eps * 1e-4)
+                b = _plane_segment(t2, n1, t1[0], eps * 1e-4)
+                if len(a) == 0 or len(b) == 0:
+                    continue
+                axis = direction / length
+                aa, bb = a @ axis, b @ axis
+                overlap = min(aa.max(), bb.max()) - max(aa.min(), bb.min())
+                hit = overlap > eps
+            if hit:
+                hits.append((i, j))
+                if len(hits) >= stop_after:
+                    return hits
+    return hits
+
+
+def validate_solid(mesh, context=None):
+    if len(mesh.faces) == 0 or not np.isfinite(mesh.vertices).all():
+        raise GeometryError("The model is empty or contains invalid coordinates.")
+    if not mesh.is_watertight or not mesh.is_winding_consistent or mesh.volume <= 0:
+        raise GeometryError("The model is not a closed, consistently oriented solid. Adjust its boundary or backing plane.")
+    if len(trimesh.graph.connected_components(mesh.face_adjacency, nodes=np.arange(len(mesh.faces)), min_len=1)) != 1:
+        raise GeometryError("The hold contains disconnected pieces. Select one connected rock feature.")
+    if self_intersections(mesh, context):
+        raise GeometryError("Surfaces intersect inside this model. Change the boundary/backing plane or reduce the recess depth.")
+
+
+def frame_for_patch(patch):
+    center = patch.vertices.mean(axis=0)
+    _, _, vt = np.linalg.svd(patch.vertices - center, full_matrices=False)
+    z = vt[-1]
+    mean_normal = (patch.face_normals * patch.area_faces[:, None]).sum(axis=0)
+    if np.dot(z, mean_normal) < 0:
+        z *= -1
+    x = vt[0] - z * np.dot(vt[0], z)
+    x /= np.linalg.norm(x)
+    y = np.cross(z, x)
+    transform = np.eye(4)
+    transform[:3, :3] = np.stack([x, y, z])
+    transform[:3, 3] = -transform[:3, :3] @ center
+    return transform
+
+
+def extract_hold(revision, face_indices, name="Hold", context=None):
+    indices = np.unique(np.asarray(face_indices, dtype=int))
+    if len(indices) < 4:
+        raise GeometryError("Select a larger connected surface patch first.")
+    patch = revision.mesh.submesh([indices], append=True, repair=False)
+    if len(trimesh.graph.connected_components(patch.face_adjacency, nodes=np.arange(len(patch.faces)), min_len=1)) != 1:
+        raise GeometryError("Select a single connected patch. Remove isolated selected areas.")
+    frame = frame_for_patch(patch)
+    patch.apply_transform(frame)
+    protected = revision.mesh.vertices[revision.protected]
+    if len(protected):
+        protected = trimesh.transform_points(protected, frame)
+    hold = Hold(name, revision.id, indices, patch, protected, frame)
+    protected_faces = indices[revision.protected[revision.mesh.faces[indices]].any(axis=1)]
+    if len(protected_faces):
+        triangles = revision.mesh.triangles[protected_faces]
+        hold.protected_triangles = trimesh.transform_points(triangles.reshape(-1, 3), frame).reshape(-1, 3, 3)
+    hold.solid = build_solid(hold, context)
+    return hold
+
+
+def prepare_hold(revision, face_indices, name="Hold", context=None, round_boundary=True, minimum_size=0.):
+    """Make a reviewable solid, trimming only the border when strict extraction fails.
+
+    Clipping subdivides original triangles; it never replaces the grip surface
+    with a height field or caps missing scan patches. The source revision stays intact.
+    """
+    from .cleanup import split_touching_boundaries
+    ctx = context or TaskContext()
+    indices = np.unique(np.asarray(face_indices, dtype=int))
+    if len(indices) < 4:
+        raise GeometryError("Paint a larger area with Select hold, or choose a suggested feature.")
+    patch = revision.mesh.submesh([indices], append=True, repair=False)
+    components = trimesh.graph.connected_components(patch.face_adjacency, nodes=np.arange(len(patch.faces)), min_len=1)
+    note = ""
+    if len(components) != 1:
+        if not round_boundary:
+            raise GeometryError("The selection contains separate pieces. Enable boundary preparation or erase the isolated areas.")
+        biggest = max(components, key=lambda ids: patch.area_faces[ids].sum())
+        note = f"Kept the largest of {len(components)} selected pieces. "
+        indices = indices[np.sort(biggest)]
+        patch = revision.mesh.submesh([indices], append=True, repair=False)
+    try:
+        hold = extract_hold(revision, indices, name, ctx)
+        hold.preparation = note + "Selected surface retained; flat back added."
+        return hold
+    except GeometryError as first_error:
+        if not round_boundary:
+            raise
+        reason = str(first_error)
+    frame = frame_for_patch(patch)
+    patch.apply_transform(frame)
+    center = patch.bounds[:, :2].mean(axis=0)
+    radius = min(patch.extents[:2]) / 2
+    angles = np.arange(40) * 2 * np.pi / 40
+    normals = np.column_stack([np.cos(angles), np.sin(angles), np.zeros(40)])
+    protected = revision.mesh.vertices[revision.protected]
+    if len(protected):
+        protected = trimesh.transform_points(protected, frame)
+    protected_faces = indices[revision.protected[revision.mesh.faces[indices]].any(axis=1)]
+    protected_triangles = np.empty((0, 3, 3))
+    if len(protected_faces):
+        protected_triangles = trimesh.transform_points(revision.mesh.triangles[protected_faces].reshape(-1, 3), frame).reshape(-1, 3, 3)
+    for attempt, fraction in enumerate([.90, .75, .60, .45]):
+        if 2 * radius * fraction < minimum_size:
+            break
+        ctx.step(20 + attempt * 15, "Preparing a simpler selection edge; preserving the scanned surface…")
+        origins = normals * radius * fraction
+        origins[:, :2] += center
+        cut = trimesh.intersections.slice_mesh_plane(patch, plane_normal=-normals, plane_origin=origins, cap=False)
+        if len(cut.faces) < 4:
+            continue
+        cut.merge_vertices(merge_tex=True, merge_norm=True, digits_vertex=7)
+        cut.update_faces(cut.unique_faces())
+        cut.update_faces(cut.nondegenerate_faces())
+        cut.remove_unreferenced_vertices()
+        split_touching_boundaries(cut)
+        hold = Hold(name, revision.id, indices, cut, protected.copy(), frame.copy(), protected_triangles=protected_triangles.copy())
+        try:
+            hold.solid = build_solid(hold, ctx)
+        except GeometryError as error:
+            reason = str(error)
+            continue
+        hold.preparation = note + (f"Trimmed the irregular selection edge to a {radius * fraction * 2:.1f} mm rounded outline. "
+                                  "The remaining grip surface is unchanged. Inspect this smaller shape before keeping it.")
+        return hold
+    raise GeometryError("This area still cannot form a clean hold after boundary preparation. "
+                        "Preview and apply scan repair, then choose a smaller patch away from missing areas or deep undercuts. "
+                        f"Detail: {reason}")
+
+
+def oriented_patch(hold):
+    if hold.scale <= 0 or hold.backing <= 0:
+        raise GeometryError("Scale and added backing thickness must be positive.")
+    patch = hold.patch.copy()
+    patch.vertices *= hold.scale
+    rotation = trimesh.transformations.euler_matrix(np.radians(hold.tilt_x), np.radians(hold.tilt_y), 0)
+    patch.apply_transform(rotation)
+    lift = hold.backing - patch.vertices[:, 2].min()
+    patch.vertices[:, 2] += lift
+    points = hold.protected_points * hold.scale
+    if len(points):
+        points = trimesh.transform_points(points, rotation)
+        points[:, 2] += lift
+    return patch, points
+
+
+def build_solid(hold, context=None):
+    ctx = context or TaskContext()
+    ctx.step(20, "Closing the hold against a flat back…")
+    patch, _ = oriented_patch(hold)
+    loops = boundary_loops(patch)
+    if len(loops) != 1:
+        raise GeometryError("Select a patch with one outer boundary and no missing interior patches. Repair small scan gaps first.")
+    boundary = loops[0]
+    xy = patch.vertices[boundary, :2]
+    polygon = Polygon(xy)
+    if not polygon.is_valid or polygon.area < 1e-4:
+        raise GeometryError("This boundary overlaps when projected onto the back. Adjust the backing tilt or select a smaller feature.")
+    # Consistent CCW ring, preserving each original perimeter vertex.
+    if not polygon.exterior.is_ccw:
+        boundary = boundary[::-1]
+        xy = xy[::-1]
+        polygon = Polygon(xy)
+    vertices = np.vstack([patch.vertices, np.column_stack([xy, np.zeros(len(xy))])])
+    faces = patch.faces.tolist()
+    count, base = len(boundary), len(patch.vertices)
+    for i in range(count):
+        j = (i + 1) % count
+        faces.extend([[int(boundary[i]), base + i, base + j], [int(boundary[i]), base + j, int(boundary[j])]])
+    # GEOS constrained triangulation retains collinear boundary vertices (Shapely 2.1+).
+    import shapely
+    triangles = shapely.constrained_delaunay_triangles(polygon)
+    tree = cKDTree(xy)
+    for triangle in triangles.geoms:
+        coordinates = np.asarray(triangle.exterior.coords)[:3]
+        distances, ids = tree.query(coordinates)
+        if distances.max() > 1e-6:
+            raise GeometryError("Could not triangulate the back without altering the boundary.")
+        faces.append((ids + base).tolist())
+    solid = trimesh.Trimesh(vertices=vertices, faces=faces, process=True)
+    trimesh.repair.fix_normals(solid, multibody=True)
+    validate_solid(solid, ctx)
+    return solid
+
+
+def demo_scan(kind="ledge", resolution=35):
+    """Deterministic synthetic fixtures, clearly distinct from real phone scans."""
+    x, y = np.meshgrid(np.linspace(-140, 140, resolution), np.linspace(-140, 140, resolution))
+    if kind == "ledge":
+        z = 38 * np.exp(-(x / 65) ** 4) * (np.tanh((y + 20) / 9) - np.tanh((y - 30) / 18)) / 2
+    elif kind == "rounded":
+        z = 65 * np.exp(-((x / 62) ** 2 + (y / 48) ** 2))
+    else:
+        z = 40 * np.exp(-((x / 80) ** 4 + (y / 65) ** 4)) - 22 * np.exp(-((x / 30) ** 2 + (y / 23) ** 2))
+    z += 0.45 * np.sin(x / 8) * np.cos(y / 11)
+    faces = []
+    for row in range(resolution - 1):
+        for col in range(resolution - 1):
+            a = row * resolution + col
+            faces.extend([[a, a + 1, a + resolution + 1], [a, a + resolution + 1, a + resolution]])
+    return trimesh.Trimesh(np.column_stack([x.ravel(), y.ravel(), z.ravel()]), faces, process=False)

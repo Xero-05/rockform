@@ -1,0 +1,4 @@
+version: 1
+bundleID: com.rockform.capture.prototype
+product: RockformCapture
+infoPath: Info.plist

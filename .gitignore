@@ -1,0 +1,41 @@
+.venv/
+__pycache__/
+.pytest_cache/
+build/
+/build-*/
+dist/
+*.egg-info/
+*.rockform
+test-output/
+iphone/.tools/
+iphone/.build/
+iphone/.bsp/
+iphone/.swiftpm/
+iphone/xtool/
+
+# Local capture data and exported prototypes
+/Your Scan - Repaired/
+/scans/
+/exports/
+*.obj
+*.stl
+*.ply
+*.glb
+*.rockform
+*.zip
+
+# Local tools, credentials, and Apple signing material
+/.tools/
+.env
+.env.*
+!.env.example
+*.p12
+*.p8
+*.pem
+*.key
+*.mobileprovision
+*.xip
+*.ipa
+*.app/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,132 @@
+"""A portable, explicit synthetic acceptance check bundled with the application."""
+from pathlib import Path
+import json
+import sys
+import traceback
+import numpy as np
+import trimesh
+from .model import Project, HardwareProfile
+from .geometry import demo_scan, extract_hold
+from .cleanup import clean_revision, CleanupOptions
+from .mounts import generate_mounts, apply_mounts
+from .storage import save_project, load_project, export_hold
+
+
+def run_scan(source, destination):
+    """Check the same default repair/suggestion path on a supplied local scan.
+
+    Writes review copies and unmounted prototypes. The input is read only;
+    no hardware dimensions are assumed and no repair is applied to the input.
+    """
+    from hashlib import sha256
+    from .storage import import_scan
+    from .detection import suggest_holds
+    from .geometry import validate_solid
+    output = Path(destination)
+    output.mkdir(parents=True, exist_ok=True)
+    report = dict(frozen=bool(getattr(sys, "frozen", False)), source=Path(source).name,
+                  purpose="Review shapes only; no hardware dimensions assumed", holds=[], passed=False)
+    try:
+        before = sha256(Path(source).read_bytes()).hexdigest()
+        project = import_scan(source)
+        report.update(source_units=project.source_units, dimensions_mm=project.original.extents.tolist(),
+                      input_triangles=len(project.original.faces))
+        preview = clean_revision(project.current, CleanupOptions(auto_fill_small_gaps=True))
+        project.commit(preview.revision)
+        report.update(repair=preview.summary, repair_warnings=preview.warnings)
+        candidates, skipped = suggest_holds(project.current, project.up)
+        report["skipped_regions"] = skipped
+        if not candidates:
+            raise RuntimeError("No suggested hold could form a valid solid using the default settings.")
+        for i, candidate in enumerate(candidates):
+            hold = candidate.prepared_hold
+            hold.name = f"Scan hold {i + 1:02}"
+            project.holds.append(hold)
+            result, stl, settings = export_hold(hold, output / f"Scan hold {i + 1:02}.stl")
+            reimported = trimesh.load_mesh(stl)
+            validate_solid(reimported)
+            assert np.allclose(result.extents, reimported.extents, atol=1e-4)
+            report["holds"].append(dict(name=hold.name, dimensions_mm=result.extents.tolist(),
+                preparation=hold.preparation, watertight=True, report=Path(settings).name))
+        save_project(project, output / "Review scan.rockform")
+        restored = load_project(output / "Review scan.rockform")
+        assert len(restored.holds) == len(project.holds)
+        assert restored.current.id == project.current.id
+        assert all(np.array_equal(a.patch.vertices, b.patch.vertices) for a, b in zip(project.holds, restored.holds))
+        assert sha256(Path(source).read_bytes()).hexdigest() == before
+        report["source_unchanged"] = True
+        check_native_view(output, restored, tab=1)
+        report["native_view"] = "Opened the repaired project and captured its first hold"
+        report["passed"] = True
+    except Exception:
+        report["error"] = traceback.format_exc()
+    (output / "scan-verification.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    return 0 if report["passed"] else 1
+
+
+def check_native_view(output, project, tab=2):
+    """Verify Qt, the OpenGL viewer, and bundled fonts/plugins in the executable."""
+    from PySide6 import QtCore, QtWidgets
+    from .app import MainWindow
+    from .widgets import STYLE
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    app.setStyle("Fusion")
+    app.setStyleSheet(STYLE)
+    window = MainWindow()
+    errors = []
+    window.show_error = errors.append
+    window.set_project(project)
+    window.select_hold(0)
+    window.tabs.setCurrentIndex(tab)
+    window.show()
+    def capture():
+        try:
+            assert window.grab().save(str(output / "packaged-window.png"))
+            assert not errors, errors
+        except Exception:
+            errors.append(traceback.format_exc())
+        finally:
+            window.dirty = False
+            window.close()
+            app.quit()
+    QtCore.QTimer.singleShot(500, capture)
+    app.exec()
+    if errors:
+        raise RuntimeError("\n".join(errors))
+
+
+def run(destination):
+    output = Path(destination)
+    output.mkdir(parents=True, exist_ok=True)
+    report = dict(frozen=bool(getattr(sys, "frozen", False)), executable=sys.executable,
+                  data="Synthetic fixtures; no real-world accuracy claim", cases=[], passed=False)
+    try:
+        for index, kind in enumerate(["ledge", "rounded", "pocket"]):
+            project = Project(demo_scan(kind, 23), f"Synthetic {kind}")
+            preview = clean_revision(project.current, CleanupOptions(fragment_percent=0, smooth_iterations=1))
+            project.commit(preview.revision)
+            mesh = project.current.mesh
+            ids = np.flatnonzero((np.abs(mesh.triangles[:, :, :2]) < 95).all(axis=(1, 2)))
+            hold = extract_hold(project.current, ids, kind)
+            bolt = HardwareProfile("Synthetic test bolt", 10, .4, 18, 6)
+            screw = HardwareProfile("Synthetic test screw", 5, .3, 10, 3, "countersink")
+            project.profiles.update(bolt=bolt, screw=screw)
+            hold.mode = "bolt-on" if index != 1 else "screw-on"
+            hold.mounts = generate_mounts(hold, bolt, screw, mode=hold.mode, count=3)
+            hold.result = apply_mounts(hold)
+            project.holds.append(hold)
+            save_project(project, output / f"{kind}.rockform")
+            restored = load_project(output / f"{kind}.rockform")
+            result, _, _ = export_hold(restored.holds[0], output / f"{kind}.stl")
+            reimported = trimesh.load_mesh(output / f"{kind}.stl")
+            assert reimported.is_volume
+            assert np.allclose(result.extents, reimported.extents, atol=1e-4)
+            report["cases"].append(dict(name=kind, mode=hold.mode, mounts=len(hold.mounts),
+                                         watertight=True, dimensions_mm=result.extents.tolist()))
+        check_native_view(output, restored)
+        report["native_view"] = "Opened and captured successfully"
+        report["passed"] = True
+    except Exception:
+        report["error"] = traceback.format_exc()
+    (output / "verification.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    return 0 if report["passed"] else 1

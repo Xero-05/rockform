@@ -1,0 +1,9 @@
+.build/
+.tools/
+.swiftpm/
+.bsp/
+xtool/
+*.ipa
+*.app/
+.DS_Store
+test-output/
