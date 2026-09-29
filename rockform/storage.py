@@ -74,12 +74,45 @@ def _mesh_read(archive, name):
     return mesh, values
 
 
+def _hold_write(archive, hold, prefix):
+    key = f"{prefix}.npz"
+    _mesh_write(archive, key, hold.patch, protected_points=hold.protected_points,
+                protected_triangles=hold.protected_triangles, frame=hold.frame, face_indices=hold.face_indices)
+    record = {k: getattr(hold, k) for k in ("id", "name", "revision_id", "backing", "scale", "tilt_x", "tilt_y", "mode", "preparation", "edge_flare", "edge_style", "grip_review", "feature_kind", "extraction")}
+    record.update(mesh=key, mounts=[asdict(m) for m in hold.mounts])
+    for attribute in ("solid", "result"):
+        mesh = getattr(hold, attribute)
+        if mesh is not None:
+            _mesh_write(archive, f"{prefix}-{attribute}.npz", mesh)
+    return record
+
+
+def _hold_read(archive, record):
+    record = record.copy()
+    record.setdefault("edge_flare", 0.)
+    record.setdefault("edge_style", "legacy")
+    key = record.pop("mesh")
+    patch, arrays = _mesh_read(archive, key)
+    mounts = []
+    for mount in record.pop("mounts"):
+        mount = mount.copy()
+        mount["profile"] = HardwareProfile(**mount["profile"])
+        mounts.append(Mount(**mount))
+    hold = Hold(patch=patch, mounts=mounts, **arrays, **record)
+    for attribute in ("solid", "result"):
+        mesh_key = f"{key[:-4]}-{attribute}.npz"
+        if mesh_key in archive.namelist():
+            setattr(hold, attribute, _mesh_read(archive, mesh_key)[0])
+    return hold
+
+
 def save_project(project, path, context=None):
     ctx = context or TaskContext()
     destination = Path(path)
-    data = dict(version=4, source_name=project.source_name, scale_factor=project.scale_factor, source_units=project.source_units,
+    data = dict(version=5, source_name=project.source_name, scale_factor=project.scale_factor, source_units=project.source_units,
                 up=project.up.tolist(), cursor=project.cursor,
-                profiles={k: asdict(v) for k, v in project.profiles.items()}, revisions=[], archived=[], holds=[])
+                profiles={k: asdict(v) for k, v in project.profiles.items()}, revisions=[], archived=[], holds=[],
+                workspace=project.workspace)
     descriptor, temp_path = tempfile.mkstemp(suffix=".tmp", dir=destination.parent)
     os.close(descriptor)
     try:
@@ -93,16 +126,18 @@ def save_project(project, path, context=None):
                 data[kind].append(dict(id=revision.id, label=revision.label, mesh=key))
             for hold in project.holds:
                 ctx.step(65, "Saving editable holds…")
-                key = f"holds/{hold.id}.npz"
-                _mesh_write(archive, key, hold.patch, protected_points=hold.protected_points,
-                            protected_triangles=hold.protected_triangles, frame=hold.frame, face_indices=hold.face_indices)
-                record = {k: getattr(hold, k) for k in ("id", "name", "revision_id", "backing", "scale", "tilt_x", "tilt_y", "mode", "preparation", "edge_flare", "edge_style", "grip_review", "feature_kind", "extraction")}
-                record.update(mesh=key, mounts=[asdict(m) for m in hold.mounts])
-                data["holds"].append(record)
-                if hold.solid is not None:
-                    _mesh_write(archive, f"holds/{hold.id}-solid.npz", hold.solid)
-                if hold.result is not None:
-                    _mesh_write(archive, f"holds/{hold.id}-result.npz", hold.result)
+                data["holds"].append(_hold_write(archive, hold, f"holds/{hold.id}"))
+            if project.pending_hold is not None:
+                data["pending_hold"] = _hold_write(archive, project.pending_hold, "workspace/hold")
+            if project.pending_cleanup is not None:
+                preview = project.pending_cleanup
+                _mesh_write(archive, "workspace/cleanup.npz", preview.revision.mesh, protected=preview.revision.protected)
+                data["pending_cleanup"] = dict(id=preview.revision.id, label=preview.revision.label,
+                                               summary=preview.summary, warnings=preview.warnings)
+                for attribute in ("removed", "added"):
+                    mesh = getattr(preview, attribute)
+                    if mesh is not None:
+                        _mesh_write(archive, f"workspace/{attribute}.npz", mesh)
             archive.writestr("project.json", json.dumps(data, indent=2, allow_nan=False))
         ctx.step(95, "Finishing project save…")
         os.replace(temp_path, destination)
@@ -120,7 +155,7 @@ def load_project(path, context=None):
         if sum(i.file_size for i in archive.infolist()) > 2_000_000_000:
             raise GeometryError("This project expands beyond the 2 GB project limit.")
         data = json.loads(archive.read("project.json"))
-        if data.get("version") not in (1, 2, 3, 4):
+        if data.get("version") not in (1, 2, 3, 4, 5):
             raise GeometryError("Unsupported project version.")
         original, _ = _mesh_read(archive, "original.npz")
         def revisions(kind):
@@ -141,22 +176,19 @@ def load_project(path, context=None):
             raise GeometryError("The project history index is invalid.")
         for record in data["holds"]:
             ctx.step(60, "Restoring editable holds…")
-            record = record.copy()
-            # Older designs retain their original straight sides until edited.
-            record.setdefault("edge_flare", 0.)
-            record.setdefault("edge_style", "legacy")
-            patch, arrays = _mesh_read(archive, record.pop("mesh"))
-            mounts = []
-            for mount in record.pop("mounts"):
-                mount = mount.copy()
-                mount["profile"] = HardwareProfile(**mount["profile"])
-                mounts.append(Mount(**mount))
-            hold = Hold(patch=patch, mounts=mounts, **arrays, **record)
-            for suffix, attribute in (("solid", "solid"), ("result", "result")):
-                key = f"holds/{hold.id}-{suffix}.npz"
-                if key in archive.namelist():
-                    setattr(hold, attribute, _mesh_read(archive, key)[0])
-            project.holds.append(hold)
+            project.holds.append(_hold_read(archive, record))
+        project.workspace = data.get("workspace", {})
+        if data.get("pending_hold"):
+            project.pending_hold = _hold_read(archive, data["pending_hold"])
+        if data.get("pending_cleanup"):
+            from .cleanup import CleanupPreview
+            record = data["pending_cleanup"]
+            mesh, arrays = _mesh_read(archive, "workspace/cleanup.npz")
+            extras = {name: _mesh_read(archive, f"workspace/{name}.npz")[0]
+                      if f"workspace/{name}.npz" in archive.namelist() else None for name in ("removed", "added")}
+            project.pending_cleanup = CleanupPreview(
+                Revision(mesh, record["label"], record["id"], arrays["protected"]),
+                extras["removed"], record["summary"], extras["added"], record["warnings"])
     ctx.step(100, "Project restored")
     return project
 

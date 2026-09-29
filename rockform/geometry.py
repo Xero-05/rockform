@@ -415,9 +415,18 @@ def _tapered_solid(patch, boundary, polygon, width, ctx, eased=True):
         chords = edges[(counts == 2) & (points[edges, 2] <= 1e-8).all(axis=1)]
         def ramp_point(xy):
             along = line.project(Point(xy))
-            distance = polygon.distance(Point(xy))
-            height = np.interp(along, distances, heights) * max(0., 1. - distance / width)
-            return [float(xy[0]), float(xy[1]), max(float(height), 1e-5)]
+            # The faceted buffer boundary is slightly inside the ideal offset.
+            # Measure to the actual outer ring, otherwise splitting a zero-height
+            # chord invents a raised lip along that ring (especially deep pockets).
+            point = Point(xy)
+            inside_distance = polygon.distance(point)
+            outside_distance = inner.boundary.distance(point)
+            fall = outside_distance / max(inside_distance + outside_distance, 1e-12)
+            height = np.interp(along, distances, heights) * fall
+            # Keep a split seam resolvable at the mesh's intersection tolerance;
+            # a sub-micron rise otherwise rounds into the flat underside.
+            seam_height = max(float(patch.extents.max()) + 2 * width, 1.) * 4e-6
+            return [float(xy[0]), float(xy[1]), max(float(height), seam_height)]
         splits = {}
         for a, b in chords:
             splits[(int(a), int(b))] = len(vertices)

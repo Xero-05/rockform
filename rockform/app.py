@@ -51,8 +51,105 @@ class MainWindow(QtWidgets.QMainWindow):
         self._last_paint = 0
         self._make_ui()
         self._make_menu()
+        for name in self._saved_controls:
+            widget = getattr(self, name)
+            signal = (widget.toggled if isinstance(widget, QtWidgets.QCheckBox) else
+                      widget.currentTextChanged if isinstance(widget, QtWidgets.QComboBox) else widget.valueChanged)
+            signal.connect(self.workspace_changed)
+        self.gap_list.itemChanged.connect(self.workspace_changed)
         self.update_profile_summary()
         self.refresh(reset_camera=True)
+
+    _saved_controls = ("repair_check", "cleanup_selected_only", "fragment", "smoothing", "reduction",
+                       "auto_fill_gaps", "gap_limit", "feature_min", "feature_max", "sensitivity",
+                       "prepare_boundary", "backing", "edge_flare", "hold_scale", "tilt_x", "tilt_y",
+                       "mount_mode", "anti_rotation", "screw_count", "mount_x", "mount_y", "drag_mounts",
+                       "cutaway", "cut_position", "brush_mode", "brush_radius", "compare")
+
+    def workspace_changed(self, *_):
+        if self.project is not None and not self.worker:
+            self.dirty = True
+
+    def capture_workspace(self):
+        """Save unaccepted work without silently applying it or keeping a hold."""
+        values = {}
+        for name in self._saved_controls:
+            widget = getattr(self, name)
+            values[name] = (widget.isChecked() if isinstance(widget, QtWidgets.QCheckBox) else
+                            widget.currentText() if isinstance(widget, QtWidgets.QComboBox) else widget.value())
+        self.project.workspace = dict(revision_id=self.project.current.id,
+            selection=np.flatnonzero(self.selected).tolist(), cleanup_area=np.flatnonzero(self.cleanup_area).tolist(),
+            hold_id=self.hold.id if self.hold else None, tab=self.tabs.currentIndex(),
+            view=self.view_mode.currentText(), controls=values,
+            camera=[list(point) for point in self.plotter.camera_position],
+            parallel_projection=bool(self.plotter.camera.parallel_projection),
+            parallel_scale=float(self.plotter.camera.parallel_scale), mount_row=self.mount_list.currentRow(),
+            inspected_gaps=bool(self.gap_list.count()),
+            checked_gaps=[self.gap_list.item(i).data(QtCore.Qt.UserRole) for i in range(self.gap_list.count())
+                          if self.gap_list.item(i).checkState() == QtCore.Qt.Checked])
+        self.project.pending_hold = self.hold_preview
+        self.project.pending_cleanup = self.preview
+
+    def restore_workspace(self):
+        state = self.project.workspace
+        index = next((i for i, hold in enumerate(self.project.holds) if hold.id == state.get("hold_id")),
+                     0 if not state and self.project.holds else -1)
+        if index >= 0:
+            self.hold_list.setCurrentRow(index)
+            self.select_hold(index)
+        if state.get("revision_id") == self.project.current.id:
+            if state.get("inspected_gaps"):
+                self.inspect_gaps()
+                for i in range(self.gap_list.count()):
+                    item = self.gap_list.item(i)
+                    if item.data(QtCore.Qt.UserRole) in state.get("checked_gaps", []):
+                        item.setCheckState(QtCore.Qt.Checked)
+            for key, target in (("selection", self.selected), ("cleanup_area", self.cleanup_area)):
+                ids = np.asarray(state.get(key, []), dtype=int)
+                if np.any((ids < 0) | (ids >= len(target))):
+                    raise GeometryError("Saved selection does not match its scan revision.")
+                target[ids] = True
+            self.hold_preview = self.project.pending_hold
+            self.preview = self.project.pending_cleanup
+            if self.hold_preview:
+                self.shape_fields(self.hold_preview)
+                self.hold_preview_text.setText(self.hold_preview.preparation + "\n" + review_text(self.hold_preview)
+                                              + "\nRestored preview — Keep hold when ready.")
+            if self.preview:
+                self.preview_text.setText(self.preview.summary + "\n" + "\n".join(self.preview.warnings))
+        for name in self._saved_controls:
+            if name not in state.get("controls", {}):
+                continue
+            widget, value = getattr(self, name), state["controls"][name]
+            blocker = QtCore.QSignalBlocker(widget)
+            if isinstance(widget, QtWidgets.QCheckBox):
+                widget.setChecked(value)
+            elif isinstance(widget, QtWidgets.QComboBox):
+                widget.setCurrentText(value)
+            else:
+                widget.setValue(value)
+            del blocker
+        self.update_profile_summary()
+        self.mount_list.setCurrentRow(state.get("mount_row", -1))
+        # Restore pending coordinate edits after selecting the stored mount row.
+        for name in ("mount_x", "mount_y"):
+            if name in state.get("controls", {}):
+                getattr(self, name).setValue(state["controls"][name])
+        default_view = "Hold" if index >= 0 else "Working scan"
+        view = state.get("view", default_view)
+        if (view == "Hold" and self.hold is None or view == "Hold preview" and self.hold_preview is None
+                or view == "Cleanup preview" and self.preview is None):
+            view = default_view
+        self.view_mode.setCurrentText(view)
+        self.tabs.setCurrentIndex(state.get("tab", 1 if index >= 0 else 0))
+        self.refresh(reset_camera=True)
+        if "camera" in state:
+            camera = np.asarray(state["camera"], dtype=float)
+            if camera.shape == (3, 3) and np.isfinite(camera).all():
+                self.plotter.camera_position = camera.tolist()
+                self.plotter.camera.parallel_projection = state.get("parallel_projection", False)
+                self.plotter.camera.parallel_scale = state.get("parallel_scale", 1.)
+                self.plotter.render()
 
     @property
     def hold(self):
@@ -443,6 +540,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "4. Click Preview hold from selection. Edge preparation can trim a troublesome border while preserving the remaining surface. Inspect the result, then click Keep hold.\n\n"
             "5. Keep Isolate natural feature checked. Protrusions close at their root without an added plate; recesses receive material under the cavity. Green shows rock and amber shows added support. Re-extract natural feature creates a replacement preview while keeping the old design.\n\n"
             "6. In 3 Mounts, the prototype bolt and screw profiles are ready to try. Their size requirements are shown below the profile buttons. Match actual hardware before printing. Generate mounts, preview the holes, and export STL.\n\n"
+            "7. Save project preserves kept holds, unfinished previews, painted selections and your view. Reopen the .rockform file with Open project to continue. Keep hold and Apply preview still require your acceptance.\n\n"
             "Left-drag rotates; the wheel zooms. Face scan looks straight at the surface. A wall scan is allowed to have an open outer edge; only the extracted hold must be closed.")
 
     def face_scan(self):
@@ -482,6 +580,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.activity.setText("Scan loaded · Confirmed units: millimeters")
         self.tabs.setCurrentIndex(0)
         self.refresh(reset_camera=True)
+        self.restore_workspace()
+        if path:
+            self.dirty = False
+            self.activity.setText(f"Project restored · {len(project.holds)} kept holds" +
+                                  (" · unfinished preview restored" if self.hold_preview or self.preview else ""))
 
     def reset_selection(self):
         self.selected = np.zeros(len(self.project.current.mesh.faces), dtype=bool)
@@ -569,7 +672,8 @@ class MainWindow(QtWidgets.QMainWindow):
         def saved(result):
             self.project_path = result
             self.dirty = False
-            self.activity.setText("Editable project saved")
+            self.activity.setText("Project saved · holds, previews, selections and current view")
+        self.capture_workspace()
         self.run_job("Saving project…", lambda ctx: save_project(self.project, path, ctx), saved)
 
     def show_scan(self):
@@ -631,6 +735,7 @@ class MainWindow(QtWidgets.QMainWindow):
                                  self.reduction.value() / 100, ids, self.gap_limit.value(), self.auto_fill_gaps.isChecked())
         def ready(preview):
             self.preview = preview
+            self.dirty = True
             self.preview_text.setText(preview.summary + ("\n" + "\n".join(preview.warnings) if preview.warnings else ""))
             self.view_mode.setCurrentText("Cleanup preview")
             self.refresh()
@@ -649,6 +754,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def discard_cleanup(self):
         self.preview = None
+        self.dirty = True
         self.preview_text.setText("Preview discarded")
         self.show_scan()
         self.refresh()
@@ -659,6 +765,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.cleanup_area[:] = False
             self.hold_preview = None
             self.hold_preview_text.setText("Selection cleared. Choose a suggestion or paint a new feature.")
+            self.dirty = True
             self.refresh()
 
     def eventFilter(self, obj, event):
@@ -744,6 +851,7 @@ class MainWindow(QtWidgets.QMainWindow):
             elif mode in ("Cleanup area", "Erase cleanup area"):
                 self.cleanup_area[ids] = mode == "Cleanup area"
         self._update_scan_colors()
+        self.dirty = True
 
     def _scan_colors(self):
         mesh = self.project.current.mesh
@@ -824,6 +932,7 @@ class MainWindow(QtWidgets.QMainWindow):
         name = f"Hold {len(self.project.holds) + 1:02}"
         def ready(hold):
             self.hold_preview = hold
+            self.dirty = True
             self.shape_fields(hold)
             self.hold_preview_text.setText(hold.preparation + "\n" + review_text(hold) + "\nInspect green rock and amber support before keeping.")
             self.view_mode.setCurrentText("Hold preview")
@@ -862,6 +971,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def discard_hold_preview(self):
         self.hold_preview = None
+        self.dirty = True
         self.hold_preview_text.setText("Preview discarded. Refine the amber selection and try again.")
         self.show_scan()
         self.refresh()
@@ -934,6 +1044,7 @@ class MainWindow(QtWidgets.QMainWindow):
             edited.grip_review = assess_grip(edited, self.project.up, ctx)
             return edited
         def ready(result):
+            self.dirty = True
             if editing_preview:
                 self.hold_preview = result
             else:

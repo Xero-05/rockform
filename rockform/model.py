@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, TYPE_CHECKING
 import uuid
 import numpy as np
 import trimesh
+
+if TYPE_CHECKING:
+    from .cleanup import CleanupPreview
 
 
 class GeometryError(ValueError):
@@ -136,6 +139,9 @@ class Project:
     scale_factor: float = 1.0
     archived_revisions: list[Revision] = field(default_factory=list)
     source_units: str = ""
+    workspace: dict = field(default_factory=dict)
+    pending_hold: Hold | None = None
+    pending_cleanup: CleanupPreview | None = None
 
     def __post_init__(self):
         if not self.revisions:

@@ -81,6 +81,31 @@ def check_native_view(output, project, tab=2):
     if project.holds:
         window.select_hold(0)
     window.tabs.setCurrentIndex(tab)
+    # Exercise the same workspace snapshot used by Save project in the frozen
+    # executable, including an unkept draft rather than only kept library holds.
+    from copy import deepcopy
+    if project.holds:
+        window.hold_preview = deepcopy(project.holds[0])
+        window.hold_preview.id += '-draft-check'
+        window.selected[window.hold_preview.face_indices] = True
+        window.view_mode.setCurrentText('Hold preview')
+    window.capture_workspace()
+    workspace_path = output / 'Workspace save check.rockform'
+    save_project(project, workspace_path)
+    restored = load_project(workspace_path)
+    window.set_project(restored, str(workspace_path))
+    assert len(restored.holds) == len(project.holds)
+    if project.holds:
+        assert window.hold_preview is not None and window.view_mode.currentText() == 'Hold preview'
+        assert np.array_equal(window.hold_preview.patch.vertices, project.holds[0].patch.vertices)
+        assert window.selected.any()
+        assert window.tabs.currentIndex() == tab
+    project.workspace = {}
+    project.pending_hold = None
+    window.set_project(project)
+    if project.holds:
+        window.select_hold(0)
+    window.tabs.setCurrentIndex(tab)
     window.show()
     def capture():
         try:

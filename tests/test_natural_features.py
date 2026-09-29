@@ -80,6 +80,26 @@ def test_recess_keeps_its_inward_surface_and_gets_only_conditional_support():
     validate_solid(hold.solid)
 
 
+def test_deep_irregular_recess_allows_needed_support_and_keeps_cavity_open():
+    mesh = demo_scan('rounded', 45)
+    x, y = mesh.vertices[:, :2].T
+    angle = np.arctan2(y, x)
+    radial = np.sqrt((x / 35.) ** 2 + (y / 48.) ** 2)
+    radial /= 1. + .09 * np.cos(7 * angle)
+    mesh.vertices[:, 2] = -38. * np.exp(-(radial ** 4))
+    hold = isolated(mesh)
+    assert hold.feature_kind == 'recess'
+    assert hold.grip_review['eligible']
+    assert hold.grip_review['support_width_mm'] > 40.
+    assert hold.backing == 3.
+    surface, _ = oriented_patch(hold)
+    heights = surface.ray.intersects_location([[0, 0, 100]], [[0, 0, -1]])[0][:, 2]
+    assert len(heights) == 1 and heights[0] < 5.
+    world = trimesh.transform_points(hold.patch.vertices, np.linalg.inv(hold.frame))
+    assert trimesh.proximity.closest_point(mesh, world)[1].max() < 1e-6
+    validate_solid(hold.solid)
+
+
 def test_small_painted_seed_expands_to_feature_not_a_rectangular_plate():
     mesh = wall_with_feature()
     centers = mesh.triangles_center

@@ -1,7 +1,7 @@
-ROCKFORM 0.1.3 - WINDOWS PROTOTYPE
+ROCKFORM 0.1.4 - WINDOWS PROTOTYPE
 
 START THE APP
-1. Download Rockform-0.1.3-Windows-x64.zip from the GitHub release.
+1. Download Rockform-0.1.4-Windows-x64.zip from the GitHub release.
 2. Use Extract All to unpack the entire ZIP.
 3. Open the extracted folder and double-click Rockform.exe.
 
@@ -24,15 +24,15 @@ Export STL for your slicer in millimeters. Save project to keep editable work.
 The Guide button explains the workflow. Right-drag paints with a selected brush;
 left-drag rotates the view and the mouse wheel zooms.
 
-NEW IN 0.1.3
-Keep Isolate natural feature enabled in 2 Holds. The app finds the surrounding
-wall and extracts the protrusion or recess at its natural outline.
-Raised features use 0 mm added backing and no surrounding plate. Recesses keep
-their inward shape and receive material below and around the cavity.
-Green shows retained rock; amber shows generated material. Shape controls can
-now rebuild a preview before Keep. Re-extract natural feature creates a new
-preview from a saved design while keeping the old shape and manual holes intact.
-New saves use format 4; save a new copy for older-app compatibility.
+NEW IN 0.1.4
+Deep recesses can become pocket suggestions with the support needed to preserve
+their cavity. The raised-feature backing-width limit no longer rejects pockets.
+Raised features still use 0 mm added backing and no surrounding plate.
+Save project now includes unfinished hold/repair previews, painted selections,
+pending settings, the selected hold and camera view. Reopen the .rockform file
+with Open project. Keep hold and Apply preview still require your acceptance.
+Older projects show their first kept hold. Unkept previews omitted by an older
+app cannot be recovered from that file. New saves use format 5 and need 0.1.4.
 
 The supplied Scaniverse scan now yields a roughly 135 x 94 x 38 mm natural feature.
 Both default mounting modes fit geometrically without adding backing. Match the

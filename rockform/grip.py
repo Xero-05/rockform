@@ -83,7 +83,9 @@ def assess_grip(hold, up=None, context=None):
         review['reasons'].append("The added edge contains an artificial ledge. Rebuild with a gradual wall return or change the selection.")
     # Large skirts indicate the selection cuts through a tall feature instead of
     # returning to low surrounding rock. Do not call that a handhold suggestion.
-    if review['support_width_mm'] > min(40., float(patch.extents[:2].min()) * .6):
+    # A recess needs a body at least as deep as the cavity. Its broad gradual
+    # outside return is intentional, not evidence of cutting through a protrusion.
+    if hold.feature_kind != "recess" and review['support_width_mm'] > min(40., float(patch.extents[:2].min()) * .6):
         review['reasons'].append(f"The cut edge needs a {review['support_width_mm']:.0f} mm wall return, which would dominate this feature. Include surrounding low rock or adjust the backing plane.")
     review['eligible'] = not review['reasons']
     return review
