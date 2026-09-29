@@ -118,6 +118,8 @@ class Hold:
     result: trimesh.Trimesh | None = None
     preparation: str = "Original selected surface."
     edge_flare: float = 10.0
+    edge_style: str = "wall-ramp"
+    grip_review: dict = field(default_factory=dict)
 
 
 @dataclass

@@ -13,9 +13,10 @@ from pyvistaqt import QtInteractor
 from PySide6 import QtCore, QtGui, QtWidgets
 from scipy.spatial import cKDTree
 from .model import Project, Revision, GeometryError, Mount
-from .geometry import demo_scan, extract_hold, prepare_hold, build_solid, oriented_patch, frame_for_patch
+from .geometry import demo_scan, extract_hold, prepare_hold, build_solid, oriented_patch, frame_for_patch, generated_faces
 from .cleanup import CleanupOptions, clean_revision, gap_info
 from .detection import suggest_holds
+from .grip import assess_grip, review_text
 from .mounts import generate_mounts, apply_mounts, validate_mounts
 from .storage import import_scan, save_project, load_project, export_hold
 from .widgets import STYLE, label, button, number, ProfileDialog, Worker
@@ -264,7 +265,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.candidate_list.setMaximumHeight(150)
         self.candidate_list.currentRowChanged.connect(self.choose_candidate)
         layout.addWidget(self.candidate_list)
-        layout.addWidget(label("Choose a suggestion, or set the brush to Select hold and RIGHT-drag over the scan. Suggestions are checked for solid creation."))
+        layout.addWidget(label("Choose a suggestion, or set the brush to Select hold and RIGHT-drag over the scan. Suggestions need broad natural relief and a contact slope away from the cut edge. No suitable features is a valid result."))
         self.prepare_boundary = QtWidgets.QCheckBox("Prepare a simpler edge when needed")
         self.prepare_boundary.setChecked(True)
         self.prepare_boundary.setToolTip("Keeps the largest selected piece and may trim its border. Preview the resulting shape before keeping it. The retained scan surface is not smoothed or reconstructed.")
@@ -282,19 +283,19 @@ class MainWindow(QtWidgets.QMainWindow):
         form = QtWidgets.QFormLayout()
         self.backing = number(6, 0.5, 100)
         self.edge_flare = number(10, 0, 100)
-        self.edge_flare.setToolTip("Adds a sloping edge outside the scanned grip, blending down to the wall. 0 keeps straight sides. The scanned contact surface stays unchanged.")
+        self.edge_flare.setToolTip("Minimum outward width. New shapes expand this as needed for a gradual wall return; the actual width is shown in the review. Legacy shapes retain their old taper until upgraded.")
         self.hold_scale = number(100, 5, 500, 1, " %")
         self.tilt_x = number(0, -70, 70, 1, "°")
         self.tilt_y = number(0, -70, 70, 1, "°")
         form.addRow("Added backing", self.backing)
-        form.addRow("Edge taper width", self.edge_flare)
+        form.addRow("Minimum wall return", self.edge_flare)
         form.addRow("Surface scale", self.hold_scale)
         form.addRow("Back tilt X", self.tilt_x)
         form.addRow("Back tilt Y", self.tilt_y)
         layout.addLayout(form)
         layout.addWidget(button("Rebuild selected hold", self.rebuild_hold))
-        layout.addWidget(button("Use tapered shape defaults", self.use_tapered_defaults))
-        layout.addWidget(label("New holds use 6 mm backing and a 10 mm tapered edge. The scanned grip stays unchanged. Existing designs keep their settings; rebuilding preserves hole positions and hardware sizes and rechecks fit."))
+        layout.addWidget(button("Use gradual wall return", self.use_tapered_defaults))
+        layout.addWidget(label("Green is retained rock; amber is generated support. New shapes use a gradual wall return, at least twice the cut-edge height. Tall or abrupt cut edges may need a wider selection. Existing shapes keep their old edge until you choose Use gradual wall return. Hole positions and sizes are preserved and rechecked."))
         layout.addStretch()
 
     def _mount_tab(self):
@@ -439,7 +440,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "2. In 1 Repair, click Preview repair & cleanup. Inspect yellow filled gaps and coral removed fragments. Click Apply preview.\n\n"
             "3. In 2 Holds, click Suggest holds and choose a result. Or select the Select hold brush below the viewer and RIGHT-drag over a small feature.\n\n"
             "4. Click Preview hold from selection. Edge preparation can trim a troublesome border while preserving the remaining surface. Inspect the result, then click Keep hold.\n\n"
-            "5. New holds taper down to the wall. Adjust Added backing and Edge taper width in 2 Holds, then Rebuild. For older holds, Use tapered shape defaults adds the new edge without changing the grip.\n\n"
+            "5. New shapes return gradually to the wall. Green shows rock and amber shows generated support. Review natural relief and contact separately from printability. Use gradual wall return upgrades old edges; difficult cuts may require selecting more surrounding low rock.\n\n"
             "6. In 3 Mounts, the prototype bolt and screw profiles are ready to try. Their size requirements are shown below the profile buttons. Match actual hardware before printing. Generate mounts, preview the holes, and export STL.\n\n"
             "Left-drag rotates; the wheel zooms. Face scan looks straight at the surface. A wall scan is allowed to have an open outer edge; only the extracted hold must be closed.")
 
@@ -765,6 +766,10 @@ class MainWindow(QtWidgets.QMainWindow):
             axis = [1, 2, 0, 1, 2, 0][index]
             self.project.up = np.zeros(3)
             self.project.up[axis] = 1 if index < 3 else -1
+            self.candidates = []
+            self.candidate_list.clear()
+            self.hold_preview = None
+            self.hold_preview_text.setText("Scan up changed. Suggest again to check contact in this direction.")
             self.dirty = True
 
     def suggest(self):
@@ -782,12 +787,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self.candidate_list.clear()
             for i, candidate in enumerate(candidates):
                 self.candidate_list.addItem(f"{i + 1:02}  {candidate.explanation}")
-            self.activity.setText(f"{len(candidates)} usable hold previews; {skipped} difficult regions skipped. Choose one, then Preview hold.")
+            self.activity.setText(f"{len(candidates)} broad-feature candidates for review. {skipped.text}")
+            self.hold_preview_text.setText(skipped.text + "\n" + "\n".join(dict.fromkeys(skipped.reasons)))
             self.show_scan()
             if candidates:
                 self.candidate_list.setCurrentRow(0)
             else:
-                self.show_error("No suggested area could make a clean solid at these sizes. Apply scan repair, lower the smallest feature size, or brush-select a small patch away from missing areas.")
+                self.hold_preview_text.setText("No suitable broad handhold features found. The scan may contain texture without enough natural grip, or the selection may cut through tall rock. Scan a more distinct feature with low surrounding rock. Manual shape previews remain available.\n\n" + skipped.text + "\n" + "\n".join(dict.fromkeys(skipped.reasons)))
         minimum, maximum, sensitivity = self.feature_min.value(), self.feature_max.value(), self.sensitivity.value()
         revision, up = self.project.current, self.project.up.copy()
         round_boundary = self.prepare_boundary.isChecked()
@@ -817,7 +823,7 @@ class MainWindow(QtWidgets.QMainWindow):
         name = f"Hold {len(self.project.holds) + 1:02}"
         def ready(hold):
             self.hold_preview = hold
-            self.hold_preview_text.setText(hold.preparation + "\nClick Keep hold when the shape looks right.")
+            self.hold_preview_text.setText(hold.preparation + "\n" + review_text(hold) + "\nInspect green rock and amber support before keeping.")
             self.view_mode.setCurrentText("Hold preview")
             self.refresh(reset_camera=True)
             QtCore.QTimer.singleShot(0, lambda: self.tabs.widget(1).ensureWidgetVisible(self.keep_hold_button))
@@ -830,8 +836,11 @@ class MainWindow(QtWidgets.QMainWindow):
             cached.name = name
             ready(cached)
             return
-        self.run_job("Preparing a flat-backed hold preview…",
-                     lambda ctx: prepare_hold(self.project.current, faces, name, ctx, round_boundary), ready)
+        def operation(ctx):
+            hold = prepare_hold(self.project.current, faces, name, ctx, round_boundary)
+            hold.grip_review = assess_grip(hold, self.project.up, ctx)
+            return hold
+        self.run_job("Preparing a flat-backed shape preview…", operation, ready)
 
     def accept_hold_preview(self):
         if not self.project or self.hold_preview is None or self.worker:
@@ -845,7 +854,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dirty = True
         self.update_hold_list()
         self.select_hold(self.hold_index)
-        self.hold_preview_text.setText("Hold added to the library. Next: 3 Mounts, or select another feature.")
+        self.hold_preview_text.setText(review_text(self.hold) + "\nSaved in the library. Open 3 Mounts to add hardware.")
         self.activity.setText("Hold kept. Open 3 Mounts to choose hardware and add mounting holes.")
 
     def discard_hold_preview(self):
@@ -870,7 +879,7 @@ class MainWindow(QtWidgets.QMainWindow):
         hold = self.hold
         if not hold:
             return
-        self.hold_preview_text.setText(hold.preparation + "\nSaved in the hold library. Open 3 Mounts to add hardware.")
+        self.hold_preview_text.setText(hold.preparation + "\n" + review_text(hold))
         self.backing.setValue(hold.backing)
         self.edge_flare.setValue(hold.edge_flare)
         self.hold_scale.setValue(hold.scale * 100)
@@ -900,11 +909,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self.show_scan()
             self.refresh()
 
-    def rebuild_hold(self):
+    def rebuild_hold(self, upgrade=False):
         if not self.hold:
             self.show_error("Create or select a hold first.")
             return
         edited = deepcopy(self.hold)
+        if upgrade:
+            edited.edge_style = "wall-ramp"
         edited.backing = self.backing.value()
         edited.edge_flare = self.edge_flare.value()
         edited.scale = self.hold_scale.value() / 100
@@ -912,9 +923,11 @@ class MainWindow(QtWidgets.QMainWindow):
         edited.result = None
         def operation(ctx):
             edited.solid = build_solid(edited, ctx)
+            edited.grip_review = assess_grip(edited, self.project.up, ctx)
             return edited
         def ready(result):
             self.project.holds[self.hold_index] = result
+            self.hold_preview_text.setText(result.preparation + "\n" + review_text(result))
             self.dirty = True
             self.update_mount_list()
             self.view_mode.setCurrentText("Hold")
@@ -922,9 +935,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.run_job("Updating backing geometry…", operation, ready)
 
     def use_tapered_defaults(self):
-        self.backing.setValue(6.)
-        self.edge_flare.setValue(10.)
-        self.rebuild_hold()
+        self.rebuild_hold(upgrade=True)
 
     def update_profile_summary(self, *_):
         if not self.project:
@@ -1158,10 +1169,18 @@ class MainWindow(QtWidgets.QMainWindow):
         hold = preview_hold if preview_hold is not None else self.hold
         mesh = hold.result if hold.result is not None else hold.solid
         display = polydata(mesh)
+        if hold.result is None:
+            colors = np.tile([161, 198, 181], (len(mesh.faces), 1)).astype(np.uint8)
+            colors[generated_faces(hold) | (mesh.triangles[:, :, 2].max(axis=1) < 1e-6)] = [209, 158, 99]
+            display.cell_data["Surface origin"] = colors
         if self.cutaway.isChecked():
             x = mesh.bounds[0, 0] + mesh.extents[0] * self.cut_position.value() / 100
             display = display.clip(normal="x", origin=(x, 0, 0))
-        self.plotter.add_mesh(display, color="#a1c6b5", smooth_shading=False, specular=0.12)
+        if hold.result is None:
+            self.plotter.add_mesh(display, scalars="Surface origin", rgb=True, smooth_shading=False, specular=0.12)
+            self.plotter.add_text("Green: scanned rock   |   Amber: generated wall return", position="lower_left", font_size=9, color="#c5e3d5")
+        else:
+            self.plotter.add_mesh(display, color="#a1c6b5", smooth_shading=False, specular=0.12)
         extent = mesh.extents
         plane = pv.Plane(center=(mesh.centroid[0], mesh.centroid[1], -0.25), direction=(0, 0, 1),
                          i_size=extent[0] * 1.2, j_size=extent[1] * 1.2, i_resolution=10, j_resolution=10)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import trimesh
 from scipy.spatial import cKDTree
-from shapely.geometry import Polygon, MultiPoint, LineString
+from shapely.geometry import Polygon, MultiPoint, LineString, Point
 from shapely.ops import triangulate
 from rtree.index import Index, Property
 from .model import GeometryError, TaskContext, Hold
@@ -129,7 +129,7 @@ def frame_for_patch(patch):
     return transform
 
 
-def extract_hold(revision, face_indices, name="Hold", context=None):
+def extract_hold(revision, face_indices, name="Hold", context=None, edge_style="wall-ramp"):
     indices = np.unique(np.asarray(face_indices, dtype=int))
     if len(indices) < 4:
         raise GeometryError("Select a larger connected surface patch first.")
@@ -141,7 +141,7 @@ def extract_hold(revision, face_indices, name="Hold", context=None):
     protected = revision.mesh.vertices[revision.protected]
     if len(protected):
         protected = trimesh.transform_points(protected, frame)
-    hold = Hold(name, revision.id, indices, patch, protected, frame)
+    hold = Hold(name, revision.id, indices, patch, protected, frame, edge_style=edge_style)
     protected_faces = indices[revision.protected[revision.mesh.faces[indices]].any(axis=1)]
     if len(protected_faces):
         triangles = revision.mesh.triangles[protected_faces]
@@ -193,12 +193,13 @@ def prepare_hold(revision, face_indices, name="Hold", context=None, round_bounda
         patch = revision.mesh.submesh([indices], append=True, repair=False)
     try:
         hold = extract_hold(revision, indices, name, ctx)
-        hold.preparation = note + "Selected rock surface retained; tapered edge blends down to a flat back."
+        hold.preparation = note + "Selected rock surface retained; a gradual wall return forms the flat back."
         return hold
     except GeometryError as first_error:
         if not round_boundary:
             raise
         reason = str(first_error)
+    failures = [reason]
     frame = frame_for_patch(patch)
     patch.apply_transform(frame)
     # A contracted selection outline retains its aspect ratio and asymmetry.
@@ -240,10 +241,14 @@ def prepare_hold(revision, face_indices, name="Hold", context=None, round_bounda
             hold.solid = build_solid(hold, ctx)
         except GeometryError as error:
             reason = str(error)
+            failures.append(reason)
             continue
         hold.preparation = note + (f"Trimmed the selection edge to a {cut.extents[0]:.1f} × {cut.extents[1]:.1f} mm outline following the selected feature. "
-                                  "The remaining rock surface is unchanged; a tapered edge blends to the wall. Inspect before keeping.")
+                                  "The remaining rock surface is unchanged; added support returns gradually to the wall. Inspect green rock and amber support before keeping.")
         return hold
+    if any("artificial ledge" in error for error in failures):
+        raise GeometryError("This selection cuts through tall or abrupt rock and would create an artificial ledge. "
+                            "Include low surrounding rock or change the backing plane. Boundary trimming did not resolve it.")
     raise GeometryError("This area still cannot form a clean hold after boundary preparation. "
                         "Preview and apply scan repair, then choose a smaller patch away from missing areas or deep undercuts. "
                         f"Detail: {reason}")
@@ -284,6 +289,14 @@ def build_solid(hold, context=None):
         boundary = boundary[::-1]
         xy = xy[::-1]
         polygon = Polygon(xy)
+    if hold.edge_style not in ("wall-ramp", "legacy"):
+        raise GeometryError("Unknown edge style. Choose Use gradual wall return to rebuild this hold.")
+    if hold.edge_style == "wall-ramp":
+        solid = _tapered_solid(patch, boundary, polygon, support_width(hold, patch, boundary), ctx, eased=False)
+        if support_ledge_area(hold, solid) >= 25.:
+            raise GeometryError("The cut edge would create an artificial ledge. Include more low rock around the feature, "
+                                "or change the backing tilt. A narrow taper cannot fix a cut through tall rock.")
+        return solid
     if hold.edge_flare > 0:
         return _tapered_solid(patch, boundary, polygon, hold.edge_flare, ctx)
     vertices = np.vstack([patch.vertices, np.column_stack([xy, np.zeros(len(xy))])])
@@ -308,8 +321,44 @@ def build_solid(hold, context=None):
     return solid
 
 
-def _tapered_solid(patch, boundary, polygon, width, ctx):
-    """Add an outward, eased skirt; no scanned grip vertices are moved.
+def support_width(hold, patch=None, boundary=None):
+    """A 1:2 fall to the wall replaces the fixed-width, eased upper shelf."""
+    if hold.edge_style == "legacy":
+        return hold.edge_flare
+    if patch is None:
+        patch, _ = oriented_patch(hold)
+    if boundary is None:
+        boundary = boundary_loops(patch)[0]
+    return max(hold.edge_flare, 2. * float(patch.vertices[boundary, 2].max()))
+
+
+def generated_faces(hold, solid=None):
+    """Identify added surfaces, excluding the back, by preserved triangle centers."""
+    solid = hold.solid if solid is None else solid
+    patch, _ = oriented_patch(hold)
+    distance = cKDTree(patch.triangles_center).query(solid.triangles_center)[0]
+    return (distance > 1e-5) & (solid.triangles[:, :, 2].max(axis=1) > 1e-6)
+
+
+def support_ledge_area(hold, solid=None):
+    """Area of connected, finger-scale added surfaces steeper than 40° to the wall.
+
+    This is a geometric rejection rule, not a prediction of friction or usability.
+    All in-plane orientations are screened, so rotating a hold cannot evade it.
+    """
+    solid = hold.solid if solid is None else solid
+    steep = generated_faces(hold, solid) & (solid.face_normals[:, 2] < np.cos(np.radians(40)))
+    ids = np.flatnonzero(steep)
+    if not len(ids):
+        return 0.
+    edges = solid.face_adjacency[steep[solid.face_adjacency].all(axis=1)]
+    groups = trimesh.graph.connected_components(edges, nodes=ids, min_len=1)
+    return max((float(solid.area_faces[g].sum()) for g in groups
+                if np.ptp(solid.triangles[g].reshape(-1, 3), axis=0).max() >= 10.), default=0.)
+
+
+def _tapered_solid(patch, boundary, polygon, width, ctx, eased=True):
+    """Add a wall return, or reproduce the legacy eased skirt when requested.
 
     Each projected annulus is disjoint, including concave outlines. Constrained
     triangulation shares every seam vertex with its neighboring band.
@@ -325,9 +374,15 @@ def _tapered_solid(patch, boundary, polygon, width, ctx):
     for fraction in (.25, .5, .75, 1.):
         ctx.step(30 + int(fraction * 25), "Blending the selected rock edge down to the wall…")
         outer = polygon.buffer(width * fraction, quad_segs=3)
+        if not eased:
+            # Buffering drops collinear vertices. Without resampling, a single
+            # long outer edge fans over multiple boundary peaks and invents
+            # steep folds despite a shallow intended ramp.
+            outer = shapely.segmentize(outer, max_segment_length=5.)
         xy = np.asarray(outer.exterior.coords)[:-1]
         along = shapely.line_locate_point(line, shapely.points(xy))
-        z = np.interp(along, distances, heights) * ((1. + np.cos(np.pi * fraction)) / 2.)
+        fall = (1. + np.cos(np.pi * fraction)) / 2. if eased else 1. - fraction
+        z = np.interp(along, distances, heights) * fall
         outer_ids = np.arange(len(vertices), len(vertices) + len(xy))
         vertices.extend(np.column_stack([xy, z]).tolist())
         band = Polygon(outer.exterior.coords, [inner.exterior.coords])
@@ -337,13 +392,50 @@ def _tapered_solid(patch, boundary, polygon, width, ctx):
         lookup_ids = np.r_[inner_ids, outer_ids]
         tree = cKDTree(lookup_xy)
         for triangle in shapely.constrained_delaunay_triangles(band).geoms:
+            if not band.covers(triangle.representative_point()):
+                continue
             distances_to_vertex, ids = tree.query(np.asarray(triangle.exterior.coords)[:3])
             if distances_to_vertex.max() > 1e-6:
                 raise GeometryError("Could not close the tapered edge. Reduce its width or adjust the selection.")
             faces.append(lookup_ids[ids].tolist())
         inner, inner_ids = outer, outer_ids
+    if not eased:
+        # A triangulated rounded corner can connect two nonadjacent zero-height
+        # rim vertices. Lift an interior midpoint on such chords; otherwise the
+        # top and back touch along an internal edge and create a non-manifold fin.
+        points = np.asarray(vertices)
+        triangles = np.asarray(faces)
+        edges, counts = np.unique(np.sort(np.vstack([triangles[:, [0, 1]], triangles[:, [1, 2]],
+                                                    triangles[:, [2, 0]]]), axis=1), axis=0, return_counts=True)
+        chords = edges[(counts == 2) & (points[edges, 2] <= 1e-8).all(axis=1)]
+        def ramp_point(xy):
+            along = line.project(Point(xy))
+            distance = polygon.distance(Point(xy))
+            height = np.interp(along, distances, heights) * max(0., 1. - distance / width)
+            return [float(xy[0]), float(xy[1]), max(float(height), 1e-5)]
+        splits = {}
+        for a, b in chords:
+            splits[(int(a), int(b))] = len(vertices)
+            vertices.append(ramp_point((points[a, :2] + points[b, :2]) / 2))
+        repaired = []
+        for face in faces:
+            perimeter = []
+            for a, b in zip(face, face[1:] + face[:1]):
+                perimeter.append(a)
+                middle = splits.get(tuple(sorted((a, b))))
+                if middle is not None:
+                    perimeter.append(middle)
+            if len(perimeter) == 3:
+                repaired.append(face)
+            else:
+                center = len(vertices)
+                vertices.append(ramp_point(points[face, :2].mean(axis=0)))
+                repaired.extend([[a, b, center] for a, b in zip(perimeter, perimeter[1:] + perimeter[:1])])
+        faces = repaired
     tree = cKDTree(np.asarray(vertices)[inner_ids, :2])
     for triangle in shapely.constrained_delaunay_triangles(inner).geoms:
+        if not inner.covers(triangle.representative_point()):
+            continue
         distances_to_vertex, ids = tree.query(np.asarray(triangle.exterior.coords)[:3])
         if distances_to_vertex.max() > 1e-6:
             raise GeometryError("Could not triangulate the flat back of the tapered hold.")

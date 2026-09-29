@@ -5,7 +5,7 @@ import manifold3d
 from shapely.geometry import Polygon, Point
 from shapely.ops import unary_union
 from scipy.spatial import cKDTree
-from .geometry import boundary_loops, oriented_patch, validate_solid
+from .geometry import boundary_loops, oriented_patch, validate_solid, support_width
 from .model import GeometryError, Mount, TaskContext
 
 
@@ -42,8 +42,9 @@ def footprint(hold):
     polygon = Polygon(patch.vertices[loops[0], :2])
     if not polygon.is_valid:
         raise GeometryError("The projected hold boundary overlaps. Adjust the backing plane.")
-    if hold.edge_flare > 0:
-        polygon = polygon.buffer(hold.edge_flare, quad_segs=3)
+    width = support_width(hold, patch, loops[0])
+    if width > 0:
+        polygon = polygon.buffer(width, quad_segs=3)
     if hold.solid is None:
         raise GeometryError("Rebuild the hold before placing mounting holes.")
     # Check the rock AND generated tapered edge, excluding only the flat back.
@@ -55,7 +56,8 @@ def footprint(hold):
         triangles = trimesh.transform_points(hold.protected_triangles.reshape(-1, 3) * hold.scale, rotation).reshape(-1, 3, 3)
         polygons = [Polygon(t[:, :2]) for t in triangles]
         protected_region = unary_union([p for p in polygons if p.is_valid and p.area > 1e-8])
-    return polygon, surface, (protected, protected_region)
+    body = Polygon(patch.vertices[loops[0], :2])
+    return polygon, surface, (protected, protected_region, body)
 
 
 def _top_heights(mesh, xy):
@@ -73,9 +75,11 @@ def _top_heights(mesh, xy):
 def mount_fit(hold, mount, geometry=None):
     profile = mount.profile
     profile.validate()
-    polygon, patch, (protected, protected_region) = geometry or footprint(hold)
+    polygon, patch, (protected, protected_region, body) = geometry or footprint(hold)
     radius = profile.seat_diameter / 2
     point = Point(mount.x, mount.y)
+    if hold.edge_style == "wall-ramp" and not body.contains(point):
+        raise FitError("boundary", "Move the mount center inside the scanned body's boundary, away from the generated wall return.")
     available = polygon.boundary.distance(point) if polygon.contains(point) else 0.
     required = radius + profile.edge_allowance
     if available < required:
@@ -102,7 +106,7 @@ def mount_fit(hold, mount, geometry=None):
                        f"or increase backing by at least {np.ceil(deficit * 10) / 10:.1f} mm and recheck.", deficit)
     # A flared edge narrows above the back. Check material around the seat at
     # the actual seat floor, rather than assuming a vertical side wall.
-    if hold.edge_flare > 0 and profile.edge_allowance > 0 and profile.recess_depth > 0:
+    if (hold.edge_style == "wall-ramp" or hold.edge_flare > 0) and profile.edge_allowance > 0 and profile.recess_depth > 0:
         outside = np.column_stack([mount.x + required * np.cos(angles), mount.y + required * np.sin(angles)])
         rim_heights, rim_hits = _top_heights(patch, outside)
         if np.isnan(rim_heights).any() or (rim_hits > 1).any() or rim_heights.min() < floor - 1e-5:
@@ -135,12 +139,13 @@ def generate_mounts(hold, bolt_profile, screw_profile, mode="bolt-on", count=2, 
         profile.validate()
     geometry = footprint(hold)
     polygon, patch, _ = geometry
-    minx, miny, maxx, maxy = polygon.bounds
+    placement_region = geometry[2][2] if hold.edge_style == "wall-ramp" else polygon
+    minx, miny, maxx, maxy = placement_region.bounds
     xs = np.linspace(minx, maxx, 19)
     ys = np.linspace(miny, maxy, 19)
-    center = np.array(polygon.centroid.coords[0])
-    candidates = np.array([*polygon.representative_point().coords, *([center] if polygon.contains(Point(center)) else []),
-                           *[[x, y] for x in xs for y in ys if polygon.contains(Point(x, y))]])
+    center = np.array(placement_region.centroid.coords[0])
+    candidates = np.array([*placement_region.representative_point().coords, *([center] if placement_region.contains(Point(center)) else []),
+                           *[[x, y] for x in xs for y in ys if placement_region.contains(Point(x, y))]])
     clearances = np.array([polygon.boundary.distance(Point(xy)) for xy in candidates])
     placed, fit_cache, failures = [], {}, []
     budget = 8000

@@ -17,6 +17,8 @@ def plate(width=80., height=60., backing=12., flare=10.):
     mesh.vertices[:, 2] = 0.
     hold = extract_hold(Revision(mesh), np.arange(len(mesh.faces)))
     hold.backing, hold.edge_flare = backing, flare
+    if flare == 0:
+        hold.edge_style = "legacy"
     hold.solid = build_solid(hold)
     return hold
 
@@ -57,7 +59,7 @@ def test_concave_outline_has_closed_taper_and_unchanged_rock_surface():
     mesh = demo_scan('rounded', 13)
     xy = mesh.triangles_center[:, :2]
     selected = np.flatnonzero(~((xy[:, 0] > 10) & (xy[:, 1] > 10)))
-    hold = extract_hold(Revision(mesh), selected)
+    hold = extract_hold(Revision(mesh), selected, edge_style="legacy")
     validate_solid(hold.solid)
     surface, _ = oriented_patch(hold)
     assert cKDTree(hold.solid.vertices).query(surface.vertices)[0].max() < 1e-7
@@ -135,6 +137,7 @@ def test_legacy_project_fills_empty_profiles_preserves_design_and_manual_edits(t
                 data = json.loads(content)
                 data['version'] = 1
                 del data['holds'][0]['edge_flare']
+                del data['holds'][0]['edge_style']
                 for key in ('shaft_diameter', 'clearance', 'head_diameter', 'recess_depth'):
                     data['profiles']['bolt'][key] = 0
                 content = json.dumps(data).encode()

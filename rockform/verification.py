@@ -35,9 +35,9 @@ def run_scan(source, destination):
         project.commit(preview.revision)
         report.update(repair=preview.summary, repair_warnings=preview.warnings)
         candidates, skipped = suggest_holds(project.current, project.up)
-        report["skipped_regions"] = skipped
-        if not candidates:
-            raise RuntimeError("No suggested hold could form a valid solid using the default settings.")
+        from dataclasses import asdict
+        report["screening"] = asdict(skipped)
+        report["no_suitable_features"] = not candidates
         for i, candidate in enumerate(candidates):
             hold = candidate.prepared_hold
             hold.name = f"Scan hold {i + 1:02}"
@@ -56,7 +56,7 @@ def run_scan(source, destination):
         assert sha256(Path(source).read_bytes()).hexdigest() == before
         report["source_unchanged"] = True
         check_native_view(output, restored, tab=1)
-        report["native_view"] = "Opened the repaired project and captured its first hold"
+        report["native_view"] = "Opened the repaired project and captured its first hold or the scan when no feature qualified"
         report["passed"] = True
     except Exception:
         report["error"] = traceback.format_exc()
@@ -76,7 +76,8 @@ def check_native_view(output, project, tab=2):
     errors = []
     window.show_error = errors.append
     window.set_project(project)
-    window.select_hold(0)
+    if project.holds:
+        window.select_hold(0)
     window.tabs.setCurrentIndex(tab)
     window.show()
     def capture():
