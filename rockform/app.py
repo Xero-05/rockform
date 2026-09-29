@@ -19,6 +19,7 @@ from .detection import suggest_holds
 from .mounts import generate_mounts, apply_mounts, validate_mounts
 from .storage import import_scan, save_project, load_project, export_hold
 from .widgets import STYLE, label, button, number, ProfileDialog, Worker
+from . import __version__
 
 
 def polydata(mesh):
@@ -28,7 +29,7 @@ def polydata(mesh):
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Rockform · Scan to hold")
+        self.setWindowTitle(f"Rockform {__version__} · Scan to hold")
         self.resize(1480, 930)
         self.setMinimumSize(1120, 720)
         self.project = None
@@ -48,6 +49,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._last_paint = 0
         self._make_ui()
         self._make_menu()
+        self.update_profile_summary()
         self.refresh(reset_camera=True)
 
     @property
@@ -246,7 +248,7 @@ class MainWindow(QtWidgets.QMainWindow):
         layout = self._scroll_tab("2 Holds")
         layout.addWidget(label("Discover a grip feature", "section"))
         form = QtWidgets.QFormLayout()
-        self.feature_min = number(30, 5, 500)
+        self.feature_min = number(50, 5, 500)
         self.feature_max = number(180, 10, 1000)
         self.sensitivity = number(50, 0, 100, 0, " %")
         self.up_axis = QtWidgets.QComboBox()
@@ -278,17 +280,21 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addLayout(preview_row)
         layout.addWidget(label("Flat-backed shape", "section"))
         form = QtWidgets.QFormLayout()
-        self.backing = number(10, 0.5, 100)
+        self.backing = number(6, 0.5, 100)
+        self.edge_flare = number(10, 0, 100)
+        self.edge_flare.setToolTip("Adds a sloping edge outside the scanned grip, blending down to the wall. 0 keeps straight sides. The scanned contact surface stays unchanged.")
         self.hold_scale = number(100, 5, 500, 1, " %")
         self.tilt_x = number(0, -70, 70, 1, "°")
         self.tilt_y = number(0, -70, 70, 1, "°")
         form.addRow("Added backing", self.backing)
+        form.addRow("Edge taper width", self.edge_flare)
         form.addRow("Surface scale", self.hold_scale)
         form.addRow("Back tilt X", self.tilt_x)
         form.addRow("Back tilt Y", self.tilt_y)
         layout.addLayout(form)
         layout.addWidget(button("Rebuild selected hold", self.rebuild_hold))
-        layout.addWidget(label("Backing starts at 10 mm for shape experiments. Changing the shape retains hole positions and hardware sizes, then rechecks their fit."))
+        layout.addWidget(button("Use tapered shape defaults", self.use_tapered_defaults))
+        layout.addWidget(label("New holds use 6 mm backing and a 10 mm tapered edge. The scanned grip stays unchanged. Existing designs keep their settings; rebuilding preserves hole positions and hardware sizes and rechecks fit."))
         layout.addStretch()
 
     def _mount_tab(self):
@@ -298,7 +304,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.mount_mode.addItems(["bolt-on", "screw-on"])
         layout.addWidget(self.mount_mode)
         self.anti_rotation = QtWidgets.QCheckBox("Add anti-rotation screw (bolt-on)")
-        self.anti_rotation.setChecked(True)
+        self.anti_rotation.setChecked(False)
         layout.addWidget(self.anti_rotation)
         self.screw_count = QtWidgets.QSpinBox()
         self.screw_count.setRange(2, 10)
@@ -310,7 +316,11 @@ class MainWindow(QtWidgets.QMainWindow):
         row.addWidget(button("Bolt profile…", lambda: self.edit_profile("bolt")))
         row.addWidget(button("Screw profile…", lambda: self.edit_profile("screw")))
         layout.addLayout(row)
-        layout.addWidget(label("Profiles use your measured hardware. Updating a profile affects new mounts; existing mounts have their own editable dimensions."))
+        layout.addWidget(label("Ready-to-use prototype profiles are included. Match them to your hardware before printing. Profile changes affect new mounts; existing holes keep their own dimensions."))
+        self.profile_summary = label("")
+        layout.addWidget(self.profile_summary)
+        self.mount_mode.currentTextChanged.connect(self.update_profile_summary)
+        self.anti_rotation.toggled.connect(self.update_profile_summary)
         layout.addWidget(button("Generate / regenerate mounts", self.auto_mounts, True))
         self.mount_list = QtWidgets.QListWidget()
         self.mount_list.setMaximumHeight(130)
@@ -429,7 +439,8 @@ class MainWindow(QtWidgets.QMainWindow):
             "2. In 1 Repair, click Preview repair & cleanup. Inspect yellow filled gaps and coral removed fragments. Click Apply preview.\n\n"
             "3. In 2 Holds, click Suggest holds and choose a result. Or select the Select hold brush below the viewer and RIGHT-drag over a small feature.\n\n"
             "4. Click Preview hold from selection. Edge preparation can trim a troublesome border while preserving the remaining surface. Inspect the result, then click Keep hold.\n\n"
-            "5. In 3 Mounts, enter your measured hardware dimensions, generate mounts, preview the holes, and export STL.\n\n"
+            "5. New holds taper down to the wall. Adjust Added backing and Edge taper width in 2 Holds, then Rebuild. For older holds, Use tapered shape defaults adds the new edge without changing the grip.\n\n"
+            "6. In 3 Mounts, the prototype bolt and screw profiles are ready to try. Their size requirements are shown below the profile buttons. Match actual hardware before printing. Generate mounts, preview the holes, and export STL.\n\n"
             "Left-drag rotates; the wheel zooms. Face scan looks straight at the surface. A wall scan is allowed to have an open outer edge; only the extracted hold must be closed.")
 
     def face_scan(self):
@@ -451,6 +462,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def set_project(self, project, path=None):
         self.project = project
+        self.update_profile_summary()
         self.project_path = path
         self.hold_index = -1
         self.preview = None
@@ -860,6 +872,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self.hold_preview_text.setText(hold.preparation + "\nSaved in the hold library. Open 3 Mounts to add hardware.")
         self.backing.setValue(hold.backing)
+        self.edge_flare.setValue(hold.edge_flare)
         self.hold_scale.setValue(hold.scale * 100)
         self.tilt_x.setValue(hold.tilt_x)
         self.tilt_y.setValue(hold.tilt_y)
@@ -893,6 +906,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         edited = deepcopy(self.hold)
         edited.backing = self.backing.value()
+        edited.edge_flare = self.edge_flare.value()
         edited.scale = self.hold_scale.value() / 100
         edited.tilt_x, edited.tilt_y = self.tilt_x.value(), self.tilt_y.value()
         edited.result = None
@@ -907,6 +921,19 @@ class MainWindow(QtWidgets.QMainWindow):
             self.refresh()
         self.run_job("Updating backing geometry…", operation, ready)
 
+    def use_tapered_defaults(self):
+        self.backing.setValue(6.)
+        self.edge_flare.setValue(10.)
+        self.rebuild_hold()
+
+    def update_profile_summary(self, *_):
+        if not self.project:
+            self.profile_summary.setText("Prototype profiles will be available when you import a scan or open a sample.")
+            return
+        kind = "bolt" if self.mount_mode.currentText() == "bolt-on" else "screw"
+        profile = self.project.profiles[kind]
+        self.profile_summary.setText(f"{profile.name}\n{profile.fit_summary()}")
+
     def edit_profile(self, kind):
         if not self.project:
             self.show_error("Import a scan or open a sample first.")
@@ -914,6 +941,7 @@ class MainWindow(QtWidgets.QMainWindow):
         dialog = ProfileDialog(self.project.profiles[kind], self)
         if dialog.exec() == QtWidgets.QDialog.Accepted:
             self.project.profiles[kind] = dialog.profile()
+            self.update_profile_summary()
             self.dirty = True
             return True
         return False
@@ -971,6 +999,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.mount_y.setValue(mount.y)
 
     def check_mounts(self):
+        self.update_profile_summary()
         if not self.hold:
             self.mount_status.setText("Select a hold to generate mounting geometry.")
             return False
@@ -1147,7 +1176,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.plotter.add_sphere_widget(lambda point, i=index: self.drag_mount(point, i),
                     center=(mount.x, mount.y, z), radius=max(2, extent.max() * 0.012),
                     color="#f0b77c", selected_color="#f9dfb8", test_callback=False)
-        state = "HOLD PREVIEW" if preview_hold is not None else ("DRILLED" if hold.result is not None else "FLAT-BACKED HOLD")
+        state = "HOLD PREVIEW" if preview_hold is not None else ("DRILLED" if hold.result is not None else "TAPERED HOLD" if hold.edge_flare > 0 else "STRAIGHT-SIDED HOLD")
         self.plotter.add_text(f"{hold.name.upper()}  /  {state}\n" +
                              " × ".join(f"{x:.1f}" for x in extent) + " mm", position="upper_left", font_size=11, color="#c5e3d5")
 

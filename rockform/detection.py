@@ -14,7 +14,7 @@ class Candidate:
     prepared_hold: Hold | None = None
 
 
-def suggest_holds(revision, up, minimum_size=30., maximum_size=180., sensitivity=50., context=None, round_boundary=True):
+def suggest_holds(revision, up, minimum_size=50., maximum_size=180., sensitivity=50., context=None, round_boundary=True):
     """Return only suggestions that can already produce a validated solid."""
     from .geometry import prepare_hold
     ctx = context or TaskContext()
@@ -34,7 +34,7 @@ def suggest_holds(revision, up, minimum_size=30., maximum_size=180., sensitivity
     return usable, len(candidates) - len(usable)
 
 
-def detect_candidates(revision, up, minimum_size=30., maximum_size=180., sensitivity=50., context=None):
+def detect_candidates(revision, up, minimum_size=50., maximum_size=180., sensitivity=50., context=None):
     ctx = context or TaskContext()
     mesh = revision.mesh
     if len(mesh.faces) < 10:

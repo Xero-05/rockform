@@ -53,6 +53,16 @@ class HardwareProfile:
     def bore(self):
         return self.shaft_diameter + self.clearance
 
+    @property
+    def seat_diameter(self):
+        return self.head_diameter + self.clearance if self.recess_depth > 0 else self.bore
+
+    def fit_summary(self):
+        return (f"Hole Ø{self.bore:.1f} mm; seat Ø{self.seat_diameter:.1f} × {self.recess_depth:.1f} mm. "
+                f"Needs at least {self.seat_diameter + 2 * self.edge_allowance:.1f} mm of clear width "
+                f"and {self.recess_depth + self.floor_allowance:.1f} mm local thickness. "
+                "Slopes, other holes and protected areas can require more space.")
+
     def validate(self):
         values = [self.shaft_diameter, self.clearance, self.head_diameter,
                   self.recess_depth, self.edge_allowance, self.floor_allowance]
@@ -60,12 +70,22 @@ class HardwareProfile:
             raise GeometryError("Hardware dimensions must be finite numbers.")
         if self.shaft_diameter <= 0 or self.clearance < 0:
             raise GeometryError("Enter the measured shaft diameter and nonnegative clearance.")
-        if self.head_diameter < self.bore or self.recess_depth < 0:
-            raise GeometryError("The head seat must be at least as wide as the clearance hole.")
+        if self.head_diameter < self.shaft_diameter:
+            raise GeometryError(f"Head diameter must be at least the shaft diameter ({self.shaft_diameter:.2f} mm). Clearance is added to both.")
+        if self.recess_depth < 0:
+            raise GeometryError("Head-seat depth cannot be negative; use 0 for a through-hole without a recess.")
         if self.edge_allowance < 0 or self.floor_allowance <= 0:
             raise GeometryError("Enter a nonnegative edge allowance and positive material allowance.")
         if self.head_shape not in ("counterbore", "countersink"):
             raise GeometryError("Choose counterbore or countersink.")
+
+
+def default_profiles():
+    """Editable modeling examples, not a specification for climbing hardware."""
+    return {
+        "bolt": HardwareProfile("10 mm bolt — prototype", 10., .5, 18., 6., "counterbore", 3., 3.),
+        "screw": HardwareProfile("5 mm screw — prototype", 5., .5, 10., 2.5, "countersink", 3., 3.),
+    }
 
 
 @dataclass
@@ -87,7 +107,7 @@ class Hold:
     protected_points: np.ndarray
     frame: np.ndarray
     protected_triangles: np.ndarray = field(default_factory=lambda: np.empty((0, 3, 3)))
-    backing: float = 10.0
+    backing: float = 6.0
     scale: float = 1.0
     tilt_x: float = 0.0
     tilt_y: float = 0.0
@@ -97,6 +117,7 @@ class Hold:
     solid: trimesh.Trimesh | None = None
     result: trimesh.Trimesh | None = None
     preparation: str = "Original selected surface."
+    edge_flare: float = 10.0
 
 
 @dataclass
@@ -106,10 +127,7 @@ class Project:
     revisions: list[Revision] = field(default_factory=list)
     cursor: int = 0
     holds: list[Hold] = field(default_factory=list)
-    profiles: dict[str, HardwareProfile] = field(default_factory=lambda: {
-        "bolt": HardwareProfile(name="Bolt — measured dimensions"),
-        "screw": HardwareProfile(name="Screw — measured dimensions", head_shape="countersink"),
-    })
+    profiles: dict[str, HardwareProfile] = field(default_factory=default_profiles)
     up: np.ndarray = field(default_factory=lambda: np.array([0., 1., 0.]))
     scale_factor: float = 1.0
     archived_revisions: list[Revision] = field(default_factory=list)

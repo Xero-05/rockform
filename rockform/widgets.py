@@ -2,7 +2,7 @@ from dataclasses import asdict
 import os
 os.environ.setdefault("QT_API", "pyside6")
 from PySide6 import QtCore, QtWidgets
-from .model import HardwareProfile, TaskContext, Cancelled
+from .model import HardwareProfile, TaskContext, Cancelled, default_profiles
 
 
 STYLE = """
@@ -71,11 +71,14 @@ def number(value, minimum=0., maximum=1000., decimals=2, suffix=" mm"):
 class ProfileDialog(QtWidgets.QDialog):
     def __init__(self, profile, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Measured hardware profile")
-        self.setMinimumWidth(420)
+        self.setWindowTitle("Hardware profile")
+        self.setMinimumWidth(500)
         layout = QtWidgets.QVBoxLayout(self)
         layout.addWidget(label("Match the hardware you will use", "section"))
-        layout.addWidget(label("Enter measured dimensions. Edge and remaining-material allowances are geometric design settings, not a load rating."))
+        layout.addWidget(label("Start with a prototype preset, then match your actual hardware. Edge and remaining-material allowances are geometry settings, not a load rating."))
+        self.presets = QtWidgets.QComboBox()
+        self.presets.addItems(["Choose a starting profile…", "10 mm bolt — prototype", "5 mm screw — prototype"])
+        layout.addWidget(self.presets)
         form = QtWidgets.QFormLayout()
         self.name = QtWidgets.QLineEdit(profile.name)
         form.addRow("Profile name", self.name)
@@ -91,12 +94,42 @@ class ProfileDialog(QtWidgets.QDialog):
         self.shape.setCurrentText(profile.head_shape)
         form.addRow("Head-seat shape", self.shape)
         layout.addLayout(form)
+        self.guidance = label("")
+        layout.addWidget(self.guidance)
         self.error = label("")
         layout.addWidget(self.error)
         controls = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Save | QtWidgets.QDialogButtonBox.Cancel)
         controls.accepted.connect(self.validate)
         controls.rejected.connect(self.reject)
         layout.addWidget(controls)
+        self.save_button = controls.button(QtWidgets.QDialogButtonBox.Save)
+        self.presets.currentIndexChanged.connect(self.use_preset)
+        for field in self.fields.values():
+            field.valueChanged.connect(self.update_guidance)
+        self.shape.currentTextChanged.connect(self.update_guidance)
+        self.update_guidance()
+
+    def use_preset(self, index):
+        if index < 1:
+            return
+        profile = default_profiles()["bolt" if index == 1 else "screw"]
+        self.name.setText(profile.name)
+        for key, field in self.fields.items():
+            field.setValue(getattr(profile, key))
+        self.shape.setCurrentText(profile.head_shape)
+        self.update_guidance()
+
+    def update_guidance(self, *_):
+        profile = self.profile()
+        try:
+            profile.validate()
+            self.guidance.setText(profile.fit_summary())
+            self.error.setText("")
+            self.save_button.setEnabled(True)
+        except ValueError as error:
+            self.guidance.setText("")
+            self.error.setText(str(error))
+            self.save_button.setEnabled(False)
 
     def profile(self):
         return HardwareProfile(name=self.name.text(), head_shape=self.shape.currentText(),

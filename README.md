@@ -26,9 +26,9 @@ A lightweight custom iPhone capture companion is now available as source in [`ip
 3. In **1 Repair**, choose **Preview repair & cleanup**. The defaults join geometry seams, fix face orientation and touching boundary connections, remove tiny fragments, and repair small interior gaps. **Yellow** shows added patches; **coral** shows removed fragments. **Compare original** overlays the original wireframe. Choose **Apply preview** when satisfied. Smoothing and triangle reduction remain optional.
 4. Choose a brush below the viewer. **Right-drag** paints a radius in millimeters. Amber selects a hold, teal protects grip detail, blue limits cleanup. Left-drag orbits; the wheel zooms. Brushes operate on nearby 3D points, so inspect the back and edges of thin surfaces after painting.
 5. **Inspect boundaries** highlights open edges. Automatic small-gap repair is enabled by default (10 mm limit), or turn it off and check individual gaps. The outer scan edge remains open; this is normal. Protected, large, strongly uneven, or tangled gaps remain open with an explanation.
-6. In **2 Holds**, set the upward direction and feature sizes, then **Suggest holds**. Suggestions are checked for solid creation before appearing. Click one and choose **Preview hold from selection**. You can also paint a connected region directly. **Prepare a simpler edge when needed** may discard disconnected selection pieces and trim a troublesome perimeter into a smaller rounded outline. It subdivides the existing triangles without rebuilding the remaining surface. Inspect the preview, then click **Keep hold**. Nothing enters the library until you keep it.
-7. Set backing thickness, surface scale, or backing tilt and **Rebuild selected hold**. The initial 10 mm backing is a prototype modeling setting. It is not a strength specification.
-8. In **3 Mounts**, choose **bolt-on** or **screw-on**. Enter your measured hardware dimensions in the bolt/screw profile dialogs. The app does not guess a universal bolt size. Bolt-on can include an anti-rotation screw; screw-on starts with two holes.
+6. In **2 Holds**, set the upward direction and feature sizes (initially 50–180 mm), then **Suggest holds**. Suggestions are checked for solid creation before appearing. Click one and choose **Preview hold from selection**. You can also paint a connected region directly. **Prepare a simpler edge when needed** may discard disconnected pieces and trim a troublesome perimeter to an outline following the selection's proportions, rather than a circular crop. It subdivides existing triangles without rebuilding the remaining surface. Inspect the preview, then click **Keep hold**.
+7. New holds add a tapered edge outside the scanned grip, blending down to the flat wall contact. Defaults are **6 mm added backing** and **10 mm edge taper width**, both editable in **2 Holds**. Use **Rebuild selected hold** after changing thickness, taper width, scale, or tilt. Width 0 retains straight sides. **Use tapered shape defaults** updates a selected older hold without moving its mounting holes. These are prototype modeling settings, not strength specifications.
+8. In **3 Mounts**, choose **bolt-on** or **screw-on**. Editable **10 mm bolt** and **5 mm screw** prototype profiles are included. Match their dimensions to your real hardware before printing. The panel and profile dialogs explain the required hole/seat sizes, clear width, and local thickness. Bolt-on starts with one bolt; the anti-rotation screw is optional and initially off. Screw-on starts with two screws.
 9. **Generate / regenerate mounts** creates a layout. Drag the orange handles to move holes, or select a hole and enter X/Y coordinates. **Hole dimensions** edits that hole independently; add/delete screws as needed. Invalid layouts remain visible with an explanation and cannot be drilled/exported.
 10. **Preview drilled hold** performs the cuts. Enable **Cutaway preview** and move its slider to inspect the seats. **Export STL** creates the mesh plus a JSON dimensions/settings report. Import the STL into your slicer in **millimeters**.
 11. **Save project** retains the source, scan revisions, protection, extracted holds, hardware profiles, and individual mount edits. Double-click a hold name to rename it.
@@ -46,6 +46,7 @@ The **Guide** button opens these basic steps inside the app. **Face scan** retur
 - Hold edits are nondestructive: the selected surface and numeric parameters are retained. Existing holds stay bound to their original scan revision after later cleanup.
 - Surface scaling does not scale hardware. Existing hole coordinates stay in the hold's millimeter coordinate system and are rechecked after shape edits.
 - Editing a saved profile affects future holes. Existing holes keep their own settings. Regeneration replaces a layout and asks before replacing manually edited holes.
+- Version 0.1.0 projects retain their original shapes, custom profiles, and individual hole edits. Empty legacy profiles receive the new presets. Newly saved projects use format 2, requiring Rockform 0.1.1 or later; save a new copy if retaining compatibility with the older app matters.
 - Cleanup and generation operate in workers. Cancel takes effect at checkpoints; individual library calls such as simplification and solid subtraction must return before cancellation completes.
 
 ## Geometry limits
@@ -53,6 +54,15 @@ The **Guide** button opens these basic steps inside the app. **Face scan** retur
 The first version is intended for broad ledges and palm-sized features. A final patch needs one connected boundary without missing interior data. Its boundary must project onto the flat back without crossing itself. Boundary preparation tries progressively smaller outlines and never fills missing interior data during extraction. Small scan gaps are filled only in the separate repair preview; those new triangles are estimated geometry. Complex undercuts and cracks can still be rejected.
 
 Candidate suggestions are geometric heuristics, not grip-quality predictions or climbing grades. Mount screening checks head-seat edge clearance, sampled material thickness, protection, and hole separation. It does not perform stress analysis. Thickness is sampled over the recess disk, so the preview still requires inspection.
+
+Prototype starting profiles (millimeters):
+
+| Profile | Shaft + clearance | Head + clearance | Recess depth | Minimum clear width | Minimum local thickness |
+| --- | --- | --- | --- | --- | --- |
+| Bolt, cylindrical seat | 10 + 0.5 | 18 + 0.5 | 6 | 24.5 | 9 |
+| Screw, conical seat | 5 + 0.5 | 10 + 0.5 | 2.5 | 16.5 | 5.5 |
+
+Both start with 3 mm geometric allowances outside and below the seat. Clear width is seat diameter plus twice the edge allowance; local thickness is recess depth plus remaining-material allowance. These are lower bounds: tapered sides, slopes, protection, and other holes can require more room. Failed placements report the limiting measurement and a suggested adjustment. Hardware length/thread engagement and structural adequacy are outside these geometry checks.
 
 Export validates connectedness, closure, face orientation, positive volume, and triangle intersections within numerical tolerance (one millionth of the model's largest dimension, minimum 0.000001 mm). STL uses float32 coordinates. Hardware seats use double precision internally.
 

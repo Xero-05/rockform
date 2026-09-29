@@ -30,10 +30,14 @@ def profiles():
 
 
 def test_extract_preserves_contact_surface(hold):
+    from rockform.geometry import oriented_patch
+    from scipy.spatial import cKDTree
     validate_solid(hold.solid)
     assert hold.solid.bounds[0, 2] == pytest.approx(0)
-    assert hold.solid.bounds[1, 2] == pytest.approx(np.ptp(hold.patch.vertices[:, 2]) + 10)
-    assert np.allclose(hold.patch.vertices[:, :2].min(axis=0), hold.solid.vertices[:, :2].min(axis=0))
+    assert hold.solid.bounds[1, 2] == pytest.approx(np.ptp(hold.patch.vertices[:, 2]) + hold.backing)
+    patch, _ = oriented_patch(hold)
+    assert cKDTree(hold.solid.vertices).query(patch.vertices)[0].max() < 1e-7
+    assert (hold.solid.extents[:2] > patch.extents[:2] + 1.8 * hold.edge_flare).all()
 
 
 @pytest.mark.parametrize("mode,count,anti", [("bolt-on", 2, True), ("bolt-on", 2, False), ("screw-on", 2, False), ("screw-on", 4, False)])

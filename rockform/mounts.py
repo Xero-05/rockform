@@ -9,6 +9,12 @@ from .geometry import boundary_loops, oriented_patch, validate_solid
 from .model import GeometryError, Mount, TaskContext
 
 
+class FitError(GeometryError):
+    def __init__(self, constraint, message, deficit=0.):
+        super().__init__(message)
+        self.constraint, self.deficit = constraint, deficit
+
+
 def _boolean(meshes, operation):
     """Keep double precision across cuts, including narrow triangles around head seats."""
     solids = []
@@ -36,13 +42,20 @@ def footprint(hold):
     polygon = Polygon(patch.vertices[loops[0], :2])
     if not polygon.is_valid:
         raise GeometryError("The projected hold boundary overlaps. Adjust the backing plane.")
+    if hold.edge_flare > 0:
+        polygon = polygon.buffer(hold.edge_flare, quad_segs=3)
+    if hold.solid is None:
+        raise GeometryError("Rebuild the hold before placing mounting holes.")
+    # Check the rock AND generated tapered edge, excluding only the flat back.
+    top_faces = np.flatnonzero((hold.solid.triangles[:, :, 2] > 1e-7).any(axis=1))
+    surface = hold.solid.submesh([top_faces], append=True, repair=False)
     protected_region = None
     if len(hold.protected_triangles):
         rotation = trimesh.transformations.euler_matrix(np.radians(hold.tilt_x), np.radians(hold.tilt_y), 0)
         triangles = trimesh.transform_points(hold.protected_triangles.reshape(-1, 3) * hold.scale, rotation).reshape(-1, 3, 3)
         polygons = [Polygon(t[:, :2]) for t in triangles]
         protected_region = unary_union([p for p in polygons if p.is_valid and p.area > 1e-8])
-    return polygon, patch, (protected, protected_region)
+    return polygon, surface, (protected, protected_region)
 
 
 def _top_heights(mesh, xy):
@@ -61,14 +74,17 @@ def mount_fit(hold, mount, geometry=None):
     profile = mount.profile
     profile.validate()
     polygon, patch, (protected, protected_region) = geometry or footprint(hold)
-    radius = profile.head_diameter / 2 + profile.clearance / 2
+    radius = profile.seat_diameter / 2
     point = Point(mount.x, mount.y)
-    if not polygon.contains(point) or polygon.boundary.distance(point) < radius + profile.edge_allowance:
-        raise GeometryError("The head seat is too close to the hold boundary. Move the hole inward or adjust the hardware profile.")
+    available = polygon.boundary.distance(point) if polygon.contains(point) else 0.
+    required = radius + profile.edge_allowance
+    if available < required:
+        raise FitError("boundary", f"Too close to the hold boundary: center needs {required:.1f} mm of edge distance; "
+                       f"only {available:.1f} mm is available here. Move inward or select a larger feature.", required - available)
     if len(protected) and cKDTree(protected[:, :2]).query([mount.x, mount.y])[0] < radius + profile.edge_allowance:
-        raise GeometryError("The mount intersects a protected grip area. Move it or edit the protection mask.")
+        raise FitError("protected", "The mount intersects a protected grip area. Move it or edit the protection mask.")
     if protected_region is not None and protected_region.distance(point) < radius + profile.edge_allowance:
-        raise GeometryError("The mount intersects a protected grip area. Move it or edit the protection mask.")
+        raise FitError("protected", "The mount intersects a protected grip area. Move it or edit the protection mask.")
     # Sample the entire recess disk, not just the center, to catch steep/thin surfaces.
     angles = np.linspace(0, 2 * np.pi, 32, endpoint=False)
     samples = [[mount.x, mount.y]]
@@ -76,10 +92,22 @@ def mount_fit(hold, mount, geometry=None):
         samples.extend(np.column_stack([mount.x + r * np.cos(angles), mount.y + r * np.sin(angles)]))
     heights, hits = _top_heights(patch, samples)
     if np.isnan(heights).any() or (hits > 1).any():
-        raise GeometryError("The mount crosses a gap or undercut. Choose a continuous surface with access from the front.")
+        raise FitError("surface", "The mount crosses a gap or undercut. Choose a continuous surface with access from the front.")
     floor = float(heights.min() - profile.recess_depth)
     if floor < profile.floor_allowance:
-        raise GeometryError("Too little material remains below the head seat. Move the mount, reduce the recess, or increase backing thickness.")
+        deficit = profile.floor_allowance - floor
+        raise FitError("thickness", f"Too little material below the head seat: needs {profile.recess_depth + profile.floor_allowance:.1f} mm "
+                       f"local thickness ({profile.recess_depth:.1f} mm recess + {profile.floor_allowance:.1f} mm remaining material); "
+                       f"only {heights.min():.1f} mm is available here. Move to a thicker area, reduce recess depth for matching hardware, "
+                       f"or increase backing by at least {np.ceil(deficit * 10) / 10:.1f} mm and recheck.", deficit)
+    # A flared edge narrows above the back. Check material around the seat at
+    # the actual seat floor, rather than assuming a vertical side wall.
+    if hold.edge_flare > 0 and profile.edge_allowance > 0 and profile.recess_depth > 0:
+        outside = np.column_stack([mount.x + required * np.cos(angles), mount.y + required * np.sin(angles)])
+        rim_heights, rim_hits = _top_heights(patch, outside)
+        if np.isnan(rim_heights).any() or (rim_hits > 1).any() or rim_heights.min() < floor - 1e-5:
+            raise FitError("side", f"The tapered side leaves less than {profile.edge_allowance:.1f} mm of material around the seat floor. "
+                           "Move the hole farther inward or use a broader feature.")
     return floor, float(heights.max()), radius
 
 
@@ -90,12 +118,16 @@ def validate_mounts(hold):
         for j, b in enumerate(hold.mounts[:i]):
             required = fits[i][2] + fits[j][2] + max(a.profile.edge_allowance, b.profile.edge_allowance)
             if np.hypot(a.x - b.x, a.y - b.y) < required:
-                raise GeometryError("Mount head seats overlap or leave too little material between holes. Move them farther apart.")
+                actual = np.hypot(a.x - b.x, a.y - b.y)
+                raise GeometryError(f"Mount head seats overlap or leave too little material: centers need {required:.1f} mm separation; "
+                                    f"they are {actual:.1f} mm apart. Move them farther apart.")
     return fits
 
 
 def generate_mounts(hold, bolt_profile, screw_profile, mode="bolt-on", count=2, anti_rotation=True, context=None):
     ctx = context or TaskContext()
+    if mode not in ("bolt-on", "screw-on") or not 1 <= count <= 10:
+        raise GeometryError("Choose bolt-on or screw-on and a screw count from 1 to 10.")
     requests = [("bolt", bolt_profile)] if mode == "bolt-on" else [("screw", screw_profile)] * count
     if mode == "bolt-on" and anti_rotation:
         requests.append(("anti-rotation", screw_profile))
@@ -107,38 +139,66 @@ def generate_mounts(hold, bolt_profile, screw_profile, mode="bolt-on", count=2, 
     xs = np.linspace(minx, maxx, 19)
     ys = np.linspace(miny, maxy, 19)
     center = np.array(polygon.centroid.coords[0])
-    candidates = np.array([[x, y] for x in xs for y in ys if polygon.contains(Point(x, y))])
-    placed = []
-    for number, (role, profile) in enumerate(requests):
-        ctx.step(10 + int(number / len(requests) * 70), f"Finding a position for {role}…")
-        # Prefer clearance and broad spacing; central positions win for the primary bolt.
-        scores = []
-        for xy in candidates:
-            clearance = polygon.boundary.distance(Point(*xy))
-            if placed:
-                separation = min(np.linalg.norm(xy - [m.x, m.y]) for m in placed)
-                score = separation + clearance * 0.4
-            else:
-                score = clearance - 0.35 * np.linalg.norm(xy - center)
-            scores.append(score)
-        reason = "No usable area was found."
+    candidates = np.array([*polygon.representative_point().coords, *([center] if polygon.contains(Point(center)) else []),
+                           *[[x, y] for x in xs for y in ys if polygon.contains(Point(x, y))]])
+    clearances = np.array([polygon.boundary.distance(Point(xy)) for xy in candidates])
+    placed, fit_cache, failures = [], {}, []
+    budget = 8000
+
+    def search(number):
+        nonlocal budget
+        if number == len(requests):
+            return True
+        role, profile = requests[number]
+        scores = clearances - .35 * np.linalg.norm(candidates - center, axis=1)
+        if placed:
+            scores = np.min([np.linalg.norm(candidates - [m.x, m.y], axis=1) for m in placed], axis=0) + .4 * clearances
+        branches = 0
         for index in np.argsort(scores)[::-1]:
+            budget -= 1
+            if budget < 0:
+                return False
             ctx.step(10 + int(number / len(requests) * 70), f"Checking {role} clearance and thickness…")
             xy = candidates[index]
-            mount = Mount(float(xy[0]), float(xy[1]), deepcopy(profile), role)
-            try:
-                mount_fit(hold, mount, geometry)
+            mount = Mount(float(xy[0]), float(xy[1]), profile, role)
+            key = (id(profile), int(index))
+            if key not in fit_cache:
+                try:
+                    mount_fit(hold, mount, geometry)
+                    fit_cache[key] = None
+                except FitError as error:
+                    fit_cache[key] = error
+            error = fit_cache[key]
+            if error is None:
                 for previous in placed:
-                    required = (profile.head_diameter + previous.profile.head_diameter + profile.clearance + previous.profile.clearance) / 2
+                    required = (profile.seat_diameter + previous.profile.seat_diameter) / 2
                     required += max(profile.edge_allowance, previous.profile.edge_allowance)
-                    if np.linalg.norm(xy - [previous.x, previous.y]) < required:
-                        raise GeometryError("Not enough separation between the requested holes.")
-                placed.append(mount)
-                break
-            except GeometryError as error:
-                reason = str(error)
-        else:
-            raise GeometryError(f"Could not place {role} {number + 1}: {reason} Try fewer holes, a larger selection, or more backing.")
+                    actual = np.linalg.norm(xy - [previous.x, previous.y])
+                    if actual < required:
+                        error = FitError("separation", f"Hole centers need {required:.1f} mm separation; "
+                                         f"only {actual:.1f} mm is available at the closest-fitting location.", required - actual)
+                        break
+            if error is not None:
+                failures.append((number, error))
+                continue
+            placed.append(Mount(mount.x, mount.y, deepcopy(profile), role))
+            if search(number + 1):
+                return True
+            placed.pop()
+            # Retry different primary holes instead of failing a possible layout
+            # simply because a centered bolt blocks the second hole.
+            branches += 1
+            if branches >= 24:
+                return False
+        return False
+
+    if not search(0):
+        priorities = {"boundary": 0, "protected": 1, "surface": 2, "thickness": 3, "side": 4, "separation": 5}
+        number, error = max(failures, key=lambda item: (item[0], priorities[item[1].constraint], -item[1].deficit)) if failures else (0, "No usable area was found.")
+        role, profile = requests[number]
+        advice = ("Turn off Add anti-rotation screw or choose a broader feature." if role == "anti-rotation" else
+                  "Try fewer screws or a broader feature." if mode == "screw-on" else "Try a broader/thicker feature or screw-on mode.")
+        raise GeometryError(f"Could not place {role} {number + 1}: {error} {advice}\n{profile.fit_summary()}")
     ctx.step(100, "Mount layout ready for adjustment")
     return placed
 

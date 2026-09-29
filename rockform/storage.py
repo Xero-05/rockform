@@ -8,7 +8,8 @@ import tempfile
 import zipfile
 import numpy as np
 import trimesh
-from .model import Project, Revision, Hold, Mount, HardwareProfile, GeometryError, TaskContext
+from .model import Project, Revision, Hold, Mount, HardwareProfile, GeometryError, TaskContext, default_profiles
+from . import __version__
 from .geometry import validate_solid
 from .mounts import apply_mounts
 
@@ -75,7 +76,7 @@ def _mesh_read(archive, name):
 def save_project(project, path, context=None):
     ctx = context or TaskContext()
     destination = Path(path)
-    data = dict(version=1, source_name=project.source_name, scale_factor=project.scale_factor, source_units=project.source_units,
+    data = dict(version=2, source_name=project.source_name, scale_factor=project.scale_factor, source_units=project.source_units,
                 up=project.up.tolist(), cursor=project.cursor,
                 profiles={k: asdict(v) for k, v in project.profiles.items()}, revisions=[], archived=[], holds=[])
     descriptor, temp_path = tempfile.mkstemp(suffix=".tmp", dir=destination.parent)
@@ -94,7 +95,7 @@ def save_project(project, path, context=None):
                 key = f"holds/{hold.id}.npz"
                 _mesh_write(archive, key, hold.patch, protected_points=hold.protected_points,
                             protected_triangles=hold.protected_triangles, frame=hold.frame, face_indices=hold.face_indices)
-                record = {k: getattr(hold, k) for k in ("id", "name", "revision_id", "backing", "scale", "tilt_x", "tilt_y", "mode", "preparation")}
+                record = {k: getattr(hold, k) for k in ("id", "name", "revision_id", "backing", "scale", "tilt_x", "tilt_y", "mode", "preparation", "edge_flare")}
                 record.update(mesh=key, mounts=[asdict(m) for m in hold.mounts])
                 data["holds"].append(record)
                 if hold.solid is not None:
@@ -118,7 +119,7 @@ def load_project(path, context=None):
         if sum(i.file_size for i in archive.infolist()) > 2_000_000_000:
             raise GeometryError("This project expands beyond the 2 GB project limit.")
         data = json.loads(archive.read("project.json"))
-        if data.get("version") != 1:
+        if data.get("version") not in (1, 2):
             raise GeometryError("Unsupported project version.")
         original, _ = _mesh_read(archive, "original.npz")
         def revisions(kind):
@@ -131,11 +132,17 @@ def load_project(path, context=None):
                           profiles={k: HardwareProfile(**v) for k, v in data["profiles"].items()},
                           up=np.asarray(data["up"]), scale_factor=data["scale_factor"],
                           archived_revisions=revisions("archived"), source_units=data.get("source_units", ""))
+        for kind, preset in default_profiles().items():
+            profile = project.profiles.get(kind)
+            if profile is None or (profile.shaft_diameter == 0 and profile.head_diameter == 0 and profile.recess_depth == 0):
+                project.profiles[kind] = preset
         if not 0 <= project.cursor < len(project.revisions):
             raise GeometryError("The project history index is invalid.")
         for record in data["holds"]:
             ctx.step(60, "Restoring editable holds…")
             record = record.copy()
+            # Older designs retain their original straight sides until edited.
+            record.setdefault("edge_flare", 0.)
             patch, arrays = _mesh_read(archive, record.pop("mesh"))
             mounts = []
             for mount in record.pop("mounts"):
@@ -156,10 +163,11 @@ def export_hold(hold, path, context=None):
     ctx = context or TaskContext()
     # Always recompute from current parameters; never export a stale preview.
     result = apply_mounts(hold, ctx)
-    report = dict(application="Rockform 0.1.0", purpose="Shape and mounting prototype; not qualified for climbing",
+    report = dict(application=f"Rockform {__version__}", purpose="Shape and mounting prototype; not qualified for climbing",
                   units="millimeters", stl_import_units="mm", hold=hold.name, source_revision=hold.revision_id,
                   dimensions_mm=result.extents.tolist(), volume_mm3=float(result.volume),
                   backing_mm=hold.backing, scale=hold.scale, tilt_degrees=[hold.tilt_x, hold.tilt_y],
+                  edge_taper_width_mm=hold.edge_flare,
                   mode=hold.mode, mounts=[asdict(m) for m in hold.mounts],
                   surface_preparation=hold.preparation,
                   checks=dict(connected=True, watertight=True, consistent_orientation=True, detected_self_intersections=0))

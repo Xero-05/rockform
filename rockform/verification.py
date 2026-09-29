@@ -5,7 +5,7 @@ import sys
 import traceback
 import numpy as np
 import trimesh
-from .model import Project, HardwareProfile
+from .model import Project
 from .geometry import demo_scan, extract_hold
 from .cleanup import clean_revision, CleanupOptions
 from .mounts import generate_mounts, apply_mounts
@@ -108,9 +108,7 @@ def run(destination):
             mesh = project.current.mesh
             ids = np.flatnonzero((np.abs(mesh.triangles[:, :, :2]) < 95).all(axis=(1, 2)))
             hold = extract_hold(project.current, ids, kind)
-            bolt = HardwareProfile("Synthetic test bolt", 10, .4, 18, 6)
-            screw = HardwareProfile("Synthetic test screw", 5, .3, 10, 3, "countersink")
-            project.profiles.update(bolt=bolt, screw=screw)
+            bolt, screw = project.profiles["bolt"], project.profiles["screw"]
             hold.mode = "bolt-on" if index != 1 else "screw-on"
             hold.mounts = generate_mounts(hold, bolt, screw, mode=hold.mode, count=3)
             hold.result = apply_mounts(hold)

@@ -52,12 +52,12 @@ def test_native_workflow_and_manual_mount_edits():
         assert window.hold_preview is not None
         window.accept_hold_preview()
         assert window.hold is not None
-        project.profiles["bolt"] = HardwareProfile("Test", 10, .4, 18, 6)
-        project.profiles["screw"] = HardwareProfile("Test", 5, .3, 10, 3, "countersink")
+        assert project.profiles["bolt"].bore == 10.5
+        assert "clear width" in window.profile_summary.text()
         window.auto_mounts()
         wait_for_worker(window)
         assert not errors, errors
-        assert len(window.hold.mounts) == 2
+        assert len(window.hold.mounts) == 1
         original_x = window.hold.mounts[0].x
         window.drag_mount((original_x + 1, window.hold.mounts[0].y, 100), 0)
         QTest.qWait(50)

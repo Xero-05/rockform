@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import trimesh
 from scipy.spatial import cKDTree
-from shapely.geometry import Polygon
+from shapely.geometry import Polygon, MultiPoint, LineString
 from shapely.ops import triangulate
 from rtree.index import Index, Property
 from .model import GeometryError, TaskContext, Hold
@@ -150,6 +150,26 @@ def extract_hold(revision, face_indices, name="Hold", context=None):
     return hold
 
 
+def _weld_cut_seams(mesh):
+    """Join numerically coincident plane-cut vertices without moving the surface."""
+    tolerance = max(float(mesh.extents.max()) * 1e-7, 1e-6)
+    pairs = cKDTree(mesh.vertices).query_pairs(tolerance, output_type="ndarray")
+    parent = np.arange(len(mesh.vertices))
+    def root(index):
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+    for a, b in pairs:
+        a, b = root(a), root(b)
+        parent[max(a, b)] = min(a, b)
+    mapping = np.array([root(i) for i in range(len(parent))])
+    mesh.faces = mapping[mesh.faces]
+    mesh.update_faces(mesh.unique_faces())
+    mesh.update_faces(mesh.nondegenerate_faces())
+    mesh.remove_unreferenced_vertices()
+
+
 def prepare_hold(revision, face_indices, name="Hold", context=None, round_boundary=True, minimum_size=0.):
     """Make a reviewable solid, trimming only the border when strict extraction fails.
 
@@ -173,7 +193,7 @@ def prepare_hold(revision, face_indices, name="Hold", context=None, round_bounda
         patch = revision.mesh.submesh([indices], append=True, repair=False)
     try:
         hold = extract_hold(revision, indices, name, ctx)
-        hold.preparation = note + "Selected surface retained; flat back added."
+        hold.preparation = note + "Selected rock surface retained; tapered edge blends down to a flat back."
         return hold
     except GeometryError as first_error:
         if not round_boundary:
@@ -181,10 +201,15 @@ def prepare_hold(revision, face_indices, name="Hold", context=None, round_bounda
         reason = str(first_error)
     frame = frame_for_patch(patch)
     patch.apply_transform(frame)
-    center = patch.bounds[:, :2].mean(axis=0)
-    radius = min(patch.extents[:2]) / 2
-    angles = np.arange(40) * 2 * np.pi / 40
-    normals = np.column_stack([np.cos(angles), np.sin(angles), np.zeros(40)])
+    # A contracted selection outline retains its aspect ratio and asymmetry.
+    # A circular fallback used to turn unrelated rock features into small pucks.
+    outline = MultiPoint(patch.vertices[:, :2]).convex_hull
+    if not isinstance(outline, Polygon) or outline.area < 1e-4:
+        raise GeometryError("This selection is too narrow to form a hold. Select a broader feature.")
+    if not outline.exterior.is_ccw:
+        outline = Polygon(np.asarray(outline.exterior.coords)[::-1])
+    center = np.asarray(outline.centroid.coords[0])
+    outline_xy = np.asarray(outline.exterior.coords)[:-1]
     protected = revision.mesh.vertices[revision.protected]
     if len(protected):
         protected = trimesh.transform_points(protected, frame)
@@ -193,15 +218,19 @@ def prepare_hold(revision, face_indices, name="Hold", context=None, round_bounda
     if len(protected_faces):
         protected_triangles = trimesh.transform_points(revision.mesh.triangles[protected_faces].reshape(-1, 3), frame).reshape(-1, 3, 3)
     for attempt, fraction in enumerate([.90, .75, .60, .45]):
-        if 2 * radius * fraction < minimum_size:
+        clip_xy = center + (outline_xy - center) * fraction
+        if np.ptp(clip_xy, axis=0).min() < minimum_size:
             break
         ctx.step(20 + attempt * 15, "Preparing a simpler selection edge; preserving the scanned surface…")
-        origins = normals * radius * fraction
-        origins[:, :2] += center
-        cut = trimesh.intersections.slice_mesh_plane(patch, plane_normal=-normals, plane_origin=origins, cap=False)
+        edges = np.roll(clip_xy, -1, axis=0) - clip_xy
+        normals = np.column_stack([-edges[:, 1], edges[:, 0], np.zeros(len(edges))])
+        normals /= np.linalg.norm(normals, axis=1)[:, None]
+        origins = np.column_stack([clip_xy, np.zeros(len(clip_xy))])
+        cut = trimesh.intersections.slice_mesh_plane(patch, plane_normal=normals, plane_origin=origins, cap=False)
         if len(cut.faces) < 4:
             continue
         cut.merge_vertices(merge_tex=True, merge_norm=True, digits_vertex=7)
+        _weld_cut_seams(cut)
         cut.update_faces(cut.unique_faces())
         cut.update_faces(cut.nondegenerate_faces())
         cut.remove_unreferenced_vertices()
@@ -212,8 +241,8 @@ def prepare_hold(revision, face_indices, name="Hold", context=None, round_bounda
         except GeometryError as error:
             reason = str(error)
             continue
-        hold.preparation = note + (f"Trimmed the irregular selection edge to a {radius * fraction * 2:.1f} mm rounded outline. "
-                                  "The remaining grip surface is unchanged. Inspect this smaller shape before keeping it.")
+        hold.preparation = note + (f"Trimmed the selection edge to a {cut.extents[0]:.1f} × {cut.extents[1]:.1f} mm outline following the selected feature. "
+                                  "The remaining rock surface is unchanged; a tapered edge blends to the wall. Inspect before keeping.")
         return hold
     raise GeometryError("This area still cannot form a clean hold after boundary preparation. "
                         "Preview and apply scan repair, then choose a smaller patch away from missing areas or deep undercuts. "
@@ -248,11 +277,15 @@ def build_solid(hold, context=None):
     polygon = Polygon(xy)
     if not polygon.is_valid or polygon.area < 1e-4:
         raise GeometryError("This boundary overlaps when projected onto the back. Adjust the backing tilt or select a smaller feature.")
+    if not np.isfinite(hold.edge_flare) or not 0 <= hold.edge_flare <= 100:
+        raise GeometryError("Edge taper width must be between 0 and 100 mm. Use 0 for straight sides.")
     # Consistent CCW ring, preserving each original perimeter vertex.
     if not polygon.exterior.is_ccw:
         boundary = boundary[::-1]
         xy = xy[::-1]
         polygon = Polygon(xy)
+    if hold.edge_flare > 0:
+        return _tapered_solid(patch, boundary, polygon, hold.edge_flare, ctx)
     vertices = np.vstack([patch.vertices, np.column_stack([xy, np.zeros(len(xy))])])
     faces = patch.faces.tolist()
     count, base = len(boundary), len(patch.vertices)
@@ -270,6 +303,53 @@ def build_solid(hold, context=None):
             raise GeometryError("Could not triangulate the back without altering the boundary.")
         faces.append((ids + base).tolist())
     solid = trimesh.Trimesh(vertices=vertices, faces=faces, process=True)
+    trimesh.repair.fix_normals(solid, multibody=True)
+    validate_solid(solid, ctx)
+    return solid
+
+
+def _tapered_solid(patch, boundary, polygon, width, ctx):
+    """Add an outward, eased skirt; no scanned grip vertices are moved.
+
+    Each projected annulus is disjoint, including concave outlines. Constrained
+    triangulation shares every seam vertex with its neighboring band.
+    """
+    import shapely
+    top = patch.vertices[boundary]
+    closed_xy = np.vstack([top[:, :2], top[0, :2]])
+    line = LineString(closed_xy)
+    distances = np.r_[0., np.cumsum(np.linalg.norm(np.diff(closed_xy, axis=0), axis=1))]
+    heights = np.r_[top[:, 2], top[0, 2]]
+    vertices, faces = patch.vertices.tolist(), patch.faces.tolist()
+    inner, inner_ids = polygon, np.asarray(boundary)
+    for fraction in (.25, .5, .75, 1.):
+        ctx.step(30 + int(fraction * 25), "Blending the selected rock edge down to the wall…")
+        outer = polygon.buffer(width * fraction, quad_segs=3)
+        xy = np.asarray(outer.exterior.coords)[:-1]
+        along = shapely.line_locate_point(line, shapely.points(xy))
+        z = np.interp(along, distances, heights) * ((1. + np.cos(np.pi * fraction)) / 2.)
+        outer_ids = np.arange(len(vertices), len(vertices) + len(xy))
+        vertices.extend(np.column_stack([xy, z]).tolist())
+        band = Polygon(outer.exterior.coords, [inner.exterior.coords])
+        if not band.is_valid:
+            raise GeometryError("The tapered edge overlaps. Reduce edge taper width or simplify the selection.")
+        lookup_xy = np.vstack([np.asarray(vertices)[inner_ids, :2], xy])
+        lookup_ids = np.r_[inner_ids, outer_ids]
+        tree = cKDTree(lookup_xy)
+        for triangle in shapely.constrained_delaunay_triangles(band).geoms:
+            distances_to_vertex, ids = tree.query(np.asarray(triangle.exterior.coords)[:3])
+            if distances_to_vertex.max() > 1e-6:
+                raise GeometryError("Could not close the tapered edge. Reduce its width or adjust the selection.")
+            faces.append(lookup_ids[ids].tolist())
+        inner, inner_ids = outer, outer_ids
+    tree = cKDTree(np.asarray(vertices)[inner_ids, :2])
+    for triangle in shapely.constrained_delaunay_triangles(inner).geoms:
+        distances_to_vertex, ids = tree.query(np.asarray(triangle.exterior.coords)[:3])
+        if distances_to_vertex.max() > 1e-6:
+            raise GeometryError("Could not triangulate the flat back of the tapered hold.")
+        faces.append(inner_ids[ids].tolist())
+    solid = trimesh.Trimesh(vertices=vertices, faces=faces, process=True)
+    _weld_cut_seams(solid)
     trimesh.repair.fix_normals(solid, multibody=True)
     validate_solid(solid, ctx)
     return solid
