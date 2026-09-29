@@ -12,6 +12,14 @@ Use your own account for commits; never share a GitHub password or token.
 
 ## Use the Windows app without installing development tools
 
+For a published version, open [Releases](https://github.com/Xero-05/rockform/releases),
+download **Rockform-0.1.0-Windows-x64.zip**, extract the whole folder, and open
+**Rockform.exe**. Choose the Windows ZIP asset, not GitHub's source-code ZIP.
+Read **START-HERE.txt** inside the download. Teammates must be signed in and have
+repository access to download a private release.
+
+To build a newer development snapshot:
+
 1. Open the repository's **Actions** tab and choose **Build Windows app**.
 2. Someone with write access clicks **Run workflow** on `main`. The build is
    manual so ordinary pushes do not start a package build.
@@ -27,6 +35,11 @@ storage limits apply. See [GitHub's manual workflow instructions](https://docs.g
 The app's **Guide** button explains importing, repair, hold selection, and mounts.
 Start with a synthetic sample if you do not have a scan yet. Personal prepared
 scan examples mentioned in the quick-start guide are not part of a source clone.
+
+Release maintainers can build with `python -m PyInstaller --noconfirm Rockform.spec`
+and then run `python scripts/package_windows.py`. Packaging requires a clean,
+committed source checkout and produces a ZIP, checksum, and build manifest in
+`dist/releases`. Test the extracted ZIP before publishing it with a matching tag.
 
 ## Develop on Windows
 

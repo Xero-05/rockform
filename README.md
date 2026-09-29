@@ -8,6 +8,11 @@ The source repository excludes personal scans, local tools, and packaged binarie
 
 ## Open the application
 
+For the portable Windows download, open [GitHub Releases](https://github.com/Xero-05/rockform/releases)
+and select the **Windows-x64.zip** asset. Extract the whole archive and run
+**Rockform.exe**; no Python installation is needed. The repository is private,
+so teammates need access before downloading. See **START-HERE.txt** inside the ZIP.
+
 Double-click **`dist\Rockform\Rockform.exe`**, or **`Start Rockform.cmd`** in this folder. Keep the complete `Rockform` folder together when copying it to another computer. The packaged application includes its Python runtime and libraries.
 
 For development, run `.venv\Scripts\python.exe -m rockform.app`.

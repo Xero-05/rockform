@@ -1,0 +1,43 @@
+ROCKFORM 0.1.0 - WINDOWS PROTOTYPE
+
+START THE APP
+1. Download Rockform-0.1.0-Windows-x64.zip from the GitHub release.
+2. Use Extract All to unpack the entire ZIP.
+3. Open the extracted folder and double-click Rockform.exe.
+
+Keep Rockform.exe and the _internal folder together. Do not run the app from
+inside the ZIP. Python, Docker, and development tools are not needed.
+This is a portable app: there is no installer and no system-wide installation.
+The executable is not code-signed; Windows may identify its publisher as unknown.
+
+FIRST USE
+Try a synthetic sample from the left-hand sidebar, or import an OBJ/STL scan.
+Check its dimensions. Scaniverse OBJ files that declare meters are converted
+automatically; still compare the dimensions with a measured reference.
+
+1 Repair: Preview repair & cleanup, inspect the changes, then Apply preview.
+2 Holds: Suggest holds, choose a result, Preview hold, then Keep hold.
+3 Mounts: Enter your measured hardware, generate mounts, and preview the cuts.
+Export STL for your slicer in millimeters. Save project to keep editable work.
+
+The Guide button explains the workflow. Right-drag paints with a selected brush;
+left-drag rotates the view and the mouse wheel zooms.
+
+TESTING STATUS
+Tested on the development Windows 11 x64 computer, including the standalone
+runtime, 3D viewer, synthetic examples, and one real Scaniverse scan. Other PCs,
+Windows versions, graphics drivers, slicers, and physical prints need independent
+testing. The application requires a working OpenGL-capable graphics driver.
+
+Outputs are shape and mounting prototypes, not qualified climbing equipment.
+The iPhone capture companion is a separate source project, not part of this ZIP.
+
+PROJECT AND UPDATES
+https://github.com/Xero-05/rockform
+This repository is private: teammates need an invitation and their own GitHub login.
+No personal scans, Apple signing files, or account credentials are included.
+
+BUILD AND LIBRARIES
+build-info.json identifies the source commit and bundled runtime.
+THIRD-PARTY-NOTICES.md and licenses/ contain library information and notices.
+The Qt/PySide libraries remain separate DLLs in _internal and are unmodified.

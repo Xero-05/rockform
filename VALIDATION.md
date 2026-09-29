@@ -2,15 +2,18 @@
 
 ## Completed on the development Windows machine
 
-- **22 automated tests passed** across the geometry engine and native Qt interface.
+- **31 automated tests passed** across the geometry engine and native Qt interface.
 - Core checks cover contact-surface extraction, bolt-on and screw-on patterns, real through-holes, resizing without scaling hardware, invalid placements, excessive recess depth, protected grip regions (including interiors of coarse triangles), missing patches, smoothing/simplification, fragment previews, gap repair, undo/redo/reset, project round trips, source-revision isolation, scale conversion, cancellation, candidate detection, and actual triangle crossings.
 - Native interface tests exercise cleanup preview/apply, history, candidate suggestions, hold creation, automatic mounting, dragging/editing mount positions, drilling, cutaway viewing, and a right-mouse protection brush followed by undo.
 - The native window was visually inspected in scan, drilled-hold, and cutaway modes. Screenshots are in `test-output`.
 - The self-contained executable completed all three synthetic workflows with `PYTHONHOME`/`PYTHONPATH` cleared and only Windows system directories on `PATH`.
 - The packaged **native 3D viewer also opened and rendered successfully**. The final passing report and screenshot are in `test-output/dll-fixed-release`. A conflicting ICU DLL inherited from the build host was removed from the package, and `Rockform.spec` now excludes it so Qt uses Windows' system ICU library.
 - Three synthetic surfaces (ledge, rounded protrusion, and shallow pocket) complete cleanup, extraction, mounting, project save/reopen, STL export, and mesh reimport without losing closed-solid geometry. These are software fixtures, not real rock scans.
+- One supplied Scaniverse OBJ completed automatic unit detection, repair preview/application, hold suggestions, project save/reopen, and export/reimport of six closed hold prototypes. Five small gaps were filled; regions unable to form valid solids were skipped. The input scan remained unchanged. These examples have no mounting holes and are not substitutes for measured real-scan or slicer validation.
 
 The reproducible acceptance runner is `Rockform.exe --self-test <output-folder>`. Its `verification.json` records whether the packaged runtime was used, the three cases, and the native viewer check. It also produces project files, STL files, dimension reports, and a screenshot of its own application window.
+
+For a local real scan, `Rockform.exe --verify-scan <scan.obj> <output-folder>` runs repair, suggestions, export/reimport, project round trip, and the native viewer. Its report is `scan-verification.json`. Private scans and test outputs are excluded from release downloads. Release acceptance runs both checks using the executable extracted from the final ZIP with Python environment variables cleared and only Windows system directories on `PATH`.
 
 The test environment uses Windows x64, Python 3.12.14, and the dependency versions in `requirements-lock.txt`. VTK currently emits NumPy deprecation warnings in the tests; these did not cause failures.
 

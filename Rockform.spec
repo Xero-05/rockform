@@ -19,11 +19,18 @@ for package in ["numpy", "scipy", "trimesh", "manifold3d", "shapely", "rtree", "
 
 a = Analysis(["launch.pyw"], pathex=[SPECPATH], binaries=binaries, datas=datas,
              hiddenimports=hiddenimports, hookspath=[], hooksconfig={"matplotlib": {"backends": ["Agg"]}},
-             runtime_hooks=[], excludes=["tkinter", "IPython", "pytest", "PyQt5", "PyQt6"], noarchive=False)
+             runtime_hooks=[], excludes=["tkinter", "IPython", "pytest", "PyQt5", "PyQt6",
+                 "qtpy.QtDataVisualization", "PySide6.QtDataVisualization",
+                 "PySide6.QtPdf", "PySide6.QtPdfWidgets", "PySide6.QtVirtualKeyboard"], noarchive=False)
 # Qt 6.11 uses Windows' system ICU ABI. Do not accidentally bundle an unrelated
 # versioned ICU found on the build host's PATH (e.g. Poppler's ICU 78 DLLs).
 a.binaries = [entry for entry in a.binaries if Path(entry[0]).name.lower() not in {"icuuc.dll", "icudt78.dll"}]
+# The viewer uses VTK. Optional PDF-image and virtual-keyboard plugins pull in
+# unused Qt add-ons; omit those plugins and their dedicated libraries.
+a.binaries = [entry for entry in a.binaries if Path(entry[0]).name.lower() not in {
+    "qpdf.dll", "qtvirtualkeyboardplugin.dll", "qt6pdf.dll", "qt6virtualkeyboard.dll"}]
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="Rockform", debug=False,
-          bootloader_ignore_signals=False, strip=False, upx=False, console=False)
+          bootloader_ignore_signals=False, strip=False, upx=False, console=False,
+          version=str(Path(SPECPATH) / "packaging" / "windows-version.txt"))
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="Rockform")
