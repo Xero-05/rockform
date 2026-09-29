@@ -16,6 +16,8 @@ import subprocess
 import sys
 import tomllib
 import zipfile
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -52,13 +54,30 @@ def package(bundle: Path, output: Path):
     license_files = {}
     # Metadata directories are copied by the PyInstaller spec for runtime libraries.
     names = {metadata.PathDistribution(p).metadata['Name'] for p in (bundle / '_internal').glob('*.dist-info')}
+    # Include transitive dependency notices even when their metadata is not
+    # needed at runtime. Setuptools is also bundled by a PyInstaller hook.
+    names = {canonicalize_name(name) for name in names} | {'setuptools'}
+    pending = list(names)
+    while pending:
+        dist = metadata.distribution(pending.pop())
+        for requirement in dist.requires or []:
+            requirement = Requirement(requirement)
+            if requirement.marker and not requirement.marker.evaluate({'extra': ''}):
+                continue
+            name = canonicalize_name(requirement.name)
+            if name not in names:
+                names.add(name)
+                pending.append(name)
+    # The executable contains PyInstaller's bootloader and runtime hooks.
+    names.add('pyinstaller')
     for name in sorted(names, key=str.lower):
         dist = metadata.distribution(name)
         expression = dist.metadata.get('License-Expression') or dist.metadata.get('License') or 'See license files'
         expression = expression.replace('\n', ' ').replace('|', '/')
         if len(expression) > 180:
             expression = 'See included license text'
-        dependencies.append(dict(name=dist.metadata['Name'], version=dist.version))
+        if name != 'pyinstaller':
+            dependencies.append(dict(name=dist.metadata['Name'], version=dist.version))
         notices.append(f'| {dist.metadata["Name"]} | {dist.version} | {expression} |')
         for entry in dist.files or []:
             relative = Path(str(entry))
@@ -81,6 +100,7 @@ def package(bundle: Path, output: Path):
     info = dict(application='Rockform', version=version, source_commit=source_commit,
         repository='https://github.com/Xero-05/rockform', platform='Windows x64',
         built_with_python=platform.python_version(), packaged_utc=datetime.now(timezone.utc).isoformat(),
+        built_with_pyinstaller=metadata.version('PyInstaller'),
         executable_sha256=executable_digest,
         dependencies=dependencies, code_signed=False, purpose='Shape and mounting prototype')
     manifest = json.dumps(info, indent=2) + '\n'
