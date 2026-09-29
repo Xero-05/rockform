@@ -43,7 +43,7 @@ def test_tilting_a_flat_scan_cannot_invent_natural_relief():
 @pytest.mark.parametrize('kind', ['rounded', 'ledge'])
 def test_detector_keeps_broad_natural_features_with_low_surroundings(kind):
     revision = Revision(demo_scan(kind, 23))
-    candidates, _ = suggest_holds(revision, [0, 1, 0], maximum_size=220.)
+    candidates, _ = suggest_holds(revision, [0, 1, 0], maximum_size=300.)
     assert candidates
     for candidate in candidates:
         hold = candidate.prepared_hold

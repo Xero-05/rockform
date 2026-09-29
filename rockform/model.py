@@ -120,6 +120,8 @@ class Hold:
     edge_flare: float = 10.0
     edge_style: str = "wall-ramp"
     grip_review: dict = field(default_factory=dict)
+    feature_kind: str = "manual"
+    extraction: dict = field(default_factory=dict)
 
 
 @dataclass

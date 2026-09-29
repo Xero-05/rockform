@@ -77,7 +77,7 @@ def _mesh_read(archive, name):
 def save_project(project, path, context=None):
     ctx = context or TaskContext()
     destination = Path(path)
-    data = dict(version=3, source_name=project.source_name, scale_factor=project.scale_factor, source_units=project.source_units,
+    data = dict(version=4, source_name=project.source_name, scale_factor=project.scale_factor, source_units=project.source_units,
                 up=project.up.tolist(), cursor=project.cursor,
                 profiles={k: asdict(v) for k, v in project.profiles.items()}, revisions=[], archived=[], holds=[])
     descriptor, temp_path = tempfile.mkstemp(suffix=".tmp", dir=destination.parent)
@@ -96,7 +96,7 @@ def save_project(project, path, context=None):
                 key = f"holds/{hold.id}.npz"
                 _mesh_write(archive, key, hold.patch, protected_points=hold.protected_points,
                             protected_triangles=hold.protected_triangles, frame=hold.frame, face_indices=hold.face_indices)
-                record = {k: getattr(hold, k) for k in ("id", "name", "revision_id", "backing", "scale", "tilt_x", "tilt_y", "mode", "preparation", "edge_flare", "edge_style", "grip_review")}
+                record = {k: getattr(hold, k) for k in ("id", "name", "revision_id", "backing", "scale", "tilt_x", "tilt_y", "mode", "preparation", "edge_flare", "edge_style", "grip_review", "feature_kind", "extraction")}
                 record.update(mesh=key, mounts=[asdict(m) for m in hold.mounts])
                 data["holds"].append(record)
                 if hold.solid is not None:
@@ -120,7 +120,7 @@ def load_project(path, context=None):
         if sum(i.file_size for i in archive.infolist()) > 2_000_000_000:
             raise GeometryError("This project expands beyond the 2 GB project limit.")
         data = json.loads(archive.read("project.json"))
-        if data.get("version") not in (1, 2, 3):
+        if data.get("version") not in (1, 2, 3, 4):
             raise GeometryError("Unsupported project version.")
         original, _ = _mesh_read(archive, "original.npz")
         def revisions(kind):
@@ -170,6 +170,7 @@ def export_hold(hold, path, context=None):
                   dimensions_mm=result.extents.tolist(), volume_mm3=float(result.volume),
                   backing_mm=hold.backing, scale=hold.scale, tilt_degrees=[hold.tilt_x, hold.tilt_y],
                   edge_taper_width_mm=hold.edge_flare, edge_style=hold.edge_style,
+                  feature_kind=hold.feature_kind, extraction=hold.extraction,
                   actual_wall_return_mm=support_width(hold), grip_screen=assess_grip(hold, hold.grip_review.get("scan_up"), ctx),
                   mode=hold.mode, mounts=[asdict(m) for m in hold.mounts],
                   surface_preparation=hold.preparation,

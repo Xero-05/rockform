@@ -13,7 +13,7 @@ Use your own account for commits; never share a GitHub password or token.
 ## Use the Windows app without installing development tools
 
 For a published version, open [Releases](https://github.com/Xero-05/rockform/releases),
-download **Rockform-0.1.2-Windows-x64.zip**, extract the whole folder, and open
+download **Rockform-0.1.3-Windows-x64.zip**, extract the whole folder, and open
 **Rockform.exe**. Choose the Windows ZIP asset, not GitHub's source-code ZIP.
 Read **START-HERE.txt** inside the download. Teammates must be signed in and have
 repository access to download a private release.

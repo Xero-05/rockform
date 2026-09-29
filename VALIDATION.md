@@ -1,31 +1,30 @@
-# Rockform 0.1.2 validation
+# Rockform 0.1.3 validation
 
-## Software checks on the development Windows machine
+**62 automated tests passed** in 260.81 seconds on the development Windows computer. VTK's existing NumPy deprecation warnings remain non-fatal.
 
-**52 regression tests passed** (295.42 seconds). It covers natural-feature screening separately from closed-solid validity, as well as the existing repair, extraction, mounting, persistence and native-interface workflows.
+New regressions cover natural-root extraction with no extra plate, zero added backing, preservation of the scanned surface, wall-plane fitting independent of scan rotation, separate protrusions, conditional support for recesses without filling their mouth, manual seed expansion, incomplete scan boundaries, missing interior data, default mount modes, unchanged hardware after resizing, persistence, STL round trips, cancellation and editing a preview before keeping it. Re-extraction creates a new preview without changing the old design or manual holes. Earlier repair, grip screening, geometry and native-interface regressions remain covered.
 
-New cases check fine texture at different mesh densities, extra backing that must not create grip evidence, a tilted flat scan, broad positive ledge/rounded fixtures, loss of a feature during boundary preparation, rejection of abrupt artificial ledges, gradual-return surface angles, preservation of scanned vertices, project migration, manual hole preservation, export reports, cancellation and a normal no-suitable-features UI result. Earlier tests still cover both mounting modes, protected regions, through-holes, resize behavior, invalid layouts, scan repairs, history and actual triangle intersections.
+## Supplied real scan
 
-The source acceptance runner completed three **synthetic** scan-to-export workflows (ledge, rounded feature and pocket), including both mounting modes, save/reopen, STL reimport and native 3D rendering. These manual-extraction fixtures demonstrate solid construction; they are not all expected to qualify as automatic handhold suggestions. The built-in Ledge sample separately produced a positive default suggestion. Its green/amber preview was visually inspected.
+The Scaniverse OBJ completes unit conversion, repair, natural-feature detection, extraction, save/reopen, STL export/reimport and native rendering. Its input hash is unchanged. The fitted wall is supported by about 72% of the spatial samples, with roughly 0.29 mm estimated residual noise.
 
-The supplied real Scaniverse OBJ completed unit conversion, repair, screening, project save/reopen and native rendering. The input hash was unchanged. At default settings it produced **zero qualifying automatic suggestions**: two retained patches had about 1.0 and 2.6 mm broad natural relief; four other candidate regions failed geometry preparation. Reports distinguish missing natural-feature evidence from shape failures. This is not an exhaustive assessment of every possible boundary or mounting plane in the scan.
+The distinct protrusion produces a closed solid approximately **135.1 × 94.4 × 37.9 mm**, with **0 mm added backing and no surrounding plate**. The root is cut 1 mm above the fitted wall to exclude noise; retained triangles remain on the scan. It passes the broad-feature screen with about 32 mm measured natural relief. This replaces the older oversized-plate result and the 0.1.2 default search that missed the feature.
 
-The previously suggested 8.4 mm plate contained only 2.4 mm total scanned height variation and roughly 1 mm of broad relief after detrending/filtering. It is now rejected regardless of added backing. The taller old example is also excluded because its generated edge contains a substantial artificial ledge. A valid solid or a fitting mount is not evidence of a useful grip.
+Both default mounting modes were successfully generated, cut, exported and checked: one bolt or two screws, without extra backing. A hole can remove the highest point, slightly reducing the exported maximum height. These are geometric fit checks, not strength tests.
 
-Source acceptance reports and screenshots are in ignored `test-output/grip-012-*` directories. Personal scans and derived geometry are excluded from releases.
+Private project files, STLs, reports and screenshots are in ignored `test-output/feature-013-*` folders. The native preview was visually inspected with the feature upright against its wall plane. No scan files are included in the release.
 
-## Reproducing packaged acceptance
+## Packaged acceptance
 
-`Rockform.exe --self-test <output-folder>` runs the three synthetic workflows and captures its own native window. `Rockform.exe --verify-scan <scan.obj> <output-folder>` runs repair and screening on a local file. A legitimate no-suitable-features result is recorded without inventing an output hold or treating it as a software crash.
+`Rockform.exe --self-test <output-folder>` exercises three synthetic scan-to-export workflows and native rendering. `Rockform.exe --verify-scan <scan.obj> <output-folder>` checks repair, screening, extraction, exports, persistence and rendering on a supplied local scan. Rejection reasons remain recorded when no complete feature is available.
 
-Release verification runs both commands using the executable **extracted from the final ZIP**, with Python environment variables cleared and only Windows system directories on PATH. It checks the executable against the manifest, checks exit codes and frozen-runtime reports, and captures the native viewer. The versioned ZIP is published only after these checks pass.
+Release acceptance runs both commands using the executable extracted from the final ZIP. Python environment variables are cleared, PATH contains only Windows system directories, and the executable is checked against its build manifest. Publication requires passing these frozen-runtime checks. The tested dependencies remain in `requirements-lock.txt`.
 
-The development environment is Windows x64, Python 3.12.14 and the versions in `requirements-lock.txt`. VTK emits NumPy deprecation warnings; those are distinct from geometry failures.
+## Still outstanding
 
-## Still requires equipment or an independent environment
+- Three measured real iPhone captures, repeatability observations and small-feature accuracy checks.
+- Slicer/toolpath review without repair, a prototype print and dimensional comparison with the source.
+- A separate Windows computer without development tools, for independent graphics-driver and installation testing.
+- Physical assessment of intended and unintended grips and qualification of print material, hardware, assembly and repeated loads before climbing use.
 
-- Three measured real iPhone rock scans, repeatability observations and small-feature accuracy checks.
-- Slicer/toolpath inspection without mesh repair, a physical prototype print and dimensional comparison with the source.
-- A separate Windows computer or VM without development tools to test installation and graphics-driver compatibility. Restricting the bundled runtime on this computer is useful but does not replace that test.
-- Physical assessment of intended and unintended grips. The support-angle and natural-relief screens are conservative heuristics, not a guarantee about how someone can hold the shape.
-- Material, print-orientation, hardware, assembly and repeated-load qualification before climbing use.
+Natural-feature and support checks are conservative geometry heuristics, not guarantees of climbing usability or safety.

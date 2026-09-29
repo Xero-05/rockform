@@ -1,22 +1,20 @@
-# Using a rock scan in Rockform 0.1.2
+# Extracting the natural feature in Rockform 0.1.3
 
-1. **Import scan** and confirm its size against a measured reference. Scaniverse OBJ files declaring meters are converted automatically. The supplied example is approximately **363 × 50 × 341 mm**.
-2. In **1 Repair**, preview cleanup and inspect the changes before applying them. Repair fixes mesh problems; it cannot add a missing natural grip. An open outer scan edge is normal.
-3. In **2 Holds**, set scan up along the rock surface, then **Suggest holds**. The app checks retained natural relief and a continuous contact slope, separately from whether the patch can form a solid. **No suitable broad handhold features found** is a normal outcome.
-4. Select a suggestion and choose **Preview hold from selection**. **Green is retained rock; amber is generated support.** Inspect both the natural contact and the wall return. Click **Keep hold** only after reviewing the shape.
-5. Manual selection remains available: choose **Select hold** below the viewer and right-drag over the feature and surrounding low rock. A manual shape that fails the natural-feature screen is labeled **Manual shape only**. Keeping it does not promote it to a screened handhold.
-6. In **3 Mounts**, editable bolt and screw prototype profiles are included. Match them to your hardware, generate a layout, inspect the drilled preview and cutaway, then export STL in **millimeters**. Save the project to retain editable settings.
+1. Import the Scaniverse OBJ and confirm scale. The supplied scan is approximately **363 × 50 × 341 mm**. Preview repair and apply it after inspection.
+2. Open **2 Holds**, keep **Isolate natural feature** checked, and click **Suggest holds**.
+3. Select the raised feature and click **Preview hold from selection**. This scan produces a roughly **135 × 94 × 38 mm** feature, with **0 mm added backing and no surrounding plate**.
+4. Inspect the green scanned surface. Only its underside is closed; the oversized amber skirt is absent. Shape settings can edit the preview before **Keep hold**.
+5. In **3 Mounts**, choose bolt-on or screw-on and generate mounts. Both default profiles geometrically fit this example without added backing. Match them to your hardware, inspect the drilled preview and cutaway, then export STL in millimeters.
+6. Save the project. New files use format 4 and require Rockform 0.1.3 or later.
 
-## Why an old suggestion may disappear
+The app fits the surrounding wall and follows the protrusion's intersection with a plane just above it. A small allowance excludes scan noise; this example uses 1 mm. Retained triangles remain on the source surface.
 
-Versions 0.1.0 and 0.1.1 could suggest a textured plate simply because it made a solid. Added backing and crop edges could then become easier grips than the scanned rock. Version 0.1.2 excludes backing and generated edges from natural-feature evidence and checks the retained patch after border trimming.
+A **recess into the wall** keeps its inward shape. Supporting material is added beneath and around that cavity; its mouth is not filled and its shape is not inverted. Added support appears in amber.
 
-On the supplied Scaniverse example, the default search currently finds no qualifying automatic handholds. Two surviving patches have about 1.0 and 2.6 mm of broad natural relief, below the 8 mm screening threshold. Other regions fail shape construction. This is a limit of the current selection/screening workflow, not proof that the entire real rock has no usable features. A scan of a more distinct feature, including low surrounding rock, is a better input. The broad-feature screen deliberately does not target small crimps or friction-only slopers.
+For manual selection, right-drag over the feature with **Select hold**. With isolation enabled, the selection identifies the feature and extraction expands to its natural outline. Turning off isolation explicitly requests an older-style backed surface patch.
 
-The older local `Your Scan - Repaired` examples are **shape experiments, not validated handholds**. Opening them preserves their geometry. Choose **2 Holds → Use gradual wall return** to explicitly upgrade an edge. Tall or abrupt cuts may be rejected; include low surrounding rock or adjust the backing plane instead. Failed rebuilds leave the original shape intact. Manual hole positions and hardware dimensions stay fixed and are rechecked.
+For an existing large-plate design, select it and choose **Re-extract natural feature**. Review and keep the new shape, then generate its own mounts. The old design and its manual holes remain intact. If it belongs to another scan revision, select the feature again on the current working scan.
 
-New shapes use a gradual return to the wall whose width grows with cut-edge height. The preview reports its actual width. The app rejects substantial artificial ledges and excludes support that would dominate a suggested feature. These geometric checks cannot guarantee how someone will grip the object.
+Missing interior data and features continuing beyond a scan edge are rejected rather than silently capped. Repair or scan more surrounding wall. Set **Scan upward direction** along the wall; if it points out of the surface, the review explains that mounting orientation remains unresolved.
 
-To try a positive example, open the **Ledge** synthetic sample. These fixtures demonstrate the workflow; they are not real scans. Left-drag rotates, right-drag paints, the wheel zooms, and **Face scan** returns to the source surface.
-
-Projects saved in 0.1.2 use format 3. Save a new copy if you also need an older app. Physical strength, slicer behavior, printing accuracy and climbing qualification remain separate validation steps.
+Outputs remain shape and mounting prototypes requiring separate physical validation.

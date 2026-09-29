@@ -39,7 +39,7 @@ def test_native_workflow_and_manual_mount_edits():
         assert project.cursor == 0
         window.redo()
         assert project.cursor == 1
-        window.feature_max.setValue(220)  # Include low surrounding rock on this coarse fixture.
+        window.feature_max.setValue(300)  # Include the entire natural root on this coarse fixture.
         window.suggest()
         wait_for_worker(window)
         assert not errors, errors

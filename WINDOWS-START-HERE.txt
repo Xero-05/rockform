@@ -1,7 +1,7 @@
-ROCKFORM 0.1.2 - WINDOWS PROTOTYPE
+ROCKFORM 0.1.3 - WINDOWS PROTOTYPE
 
 START THE APP
-1. Download Rockform-0.1.2-Windows-x64.zip from the GitHub release.
+1. Download Rockform-0.1.3-Windows-x64.zip from the GitHub release.
 2. Use Extract All to unpack the entire ZIP.
 3. Open the extracted folder and double-click Rockform.exe.
 
@@ -24,25 +24,19 @@ Export STL for your slicer in millimeters. Save project to keep editable work.
 The Guide button explains the workflow. Right-drag paints with a selected brush;
 left-drag rotates the view and the mouse wheel zooms.
 
-NEW IN 0.1.2
-Suggestions now require broad natural relief and a continuous contact slope in
-the retained scan. Artificial backing and generated edges never count as grip.
-No suitable features is a normal result; repairs cannot invent missing grips.
+NEW IN 0.1.3
+Keep Isolate natural feature enabled in 2 Holds. The app finds the surrounding
+wall and extracts the protrusion or recess at its natural outline.
+Raised features use 0 mm added backing and no surrounding plate. Recesses keep
+their inward shape and receive material below and around the cavity.
+Green shows retained rock; amber shows generated material. Shape controls can
+now rebuild a preview before Keep. Re-extract natural feature creates a new
+preview from a saved design while keeping the old shape and manual holes intact.
+New saves use format 4; save a new copy for older-app compatibility.
 
-New shapes use a gradual wall return instead of a fixed-width upper shelf.
-Green shows scanned rock; amber shows generated support. Tall or abrupt cut
-edges may require selecting more low rock around the feature. Inspect the grip
-screen and the shape before keeping it. Manual shapes can still be kept even
-when their natural features do not qualify for automatic suggestions.
-
-Existing saved designs keep their shape and hole positions. To upgrade one,
-select it in 2 Holds and choose Use gradual wall return. Geometry that would
-create a substantial artificial ledge is rejected with an explanation. Failed
-rebuilds leave the original design intact. Mount dimensions stay unchanged.
-Saved projects now use format 3; save a new copy to retain older-app compatibility.
-
-Editable bolt and screw prototype profiles remain included. Their dialogs show
-the required hole sizes, width and thickness. Match them to actual hardware.
+The supplied Scaniverse scan now yields a roughly 135 x 94 x 38 mm natural feature.
+Both default mounting modes fit geometrically without adding backing. Match the
+editable prototype profiles to your actual hardware before printing.
 
 TESTING STATUS
 Tested on the development Windows 11 x64 computer, including the standalone

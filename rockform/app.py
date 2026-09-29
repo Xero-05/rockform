@@ -17,6 +17,7 @@ from .geometry import demo_scan, extract_hold, prepare_hold, build_solid, orient
 from .cleanup import CleanupOptions, clean_revision, gap_info
 from .detection import suggest_holds
 from .grip import assess_grip, review_text
+from .features import prepare_feature
 from .mounts import generate_mounts, apply_mounts, validate_mounts
 from .storage import import_scan, save_project, load_project, export_hold
 from .widgets import STYLE, label, button, number, ProfileDialog, Worker
@@ -250,7 +251,7 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(label("Discover a grip feature", "section"))
         form = QtWidgets.QFormLayout()
         self.feature_min = number(50, 5, 500)
-        self.feature_max = number(180, 10, 1000)
+        self.feature_max = number(300, 10, 1000)
         self.sensitivity = number(50, 0, 100, 0, " %")
         self.up_axis = QtWidgets.QComboBox()
         self.up_axis.addItems(["+Y", "+Z", "+X", "−Y", "−Z", "−X"])
@@ -266,9 +267,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.candidate_list.currentRowChanged.connect(self.choose_candidate)
         layout.addWidget(self.candidate_list)
         layout.addWidget(label("Choose a suggestion, or set the brush to Select hold and RIGHT-drag over the scan. Suggestions need broad natural relief and a contact slope away from the cut edge. No suitable features is a valid result."))
-        self.prepare_boundary = QtWidgets.QCheckBox("Prepare a simpler edge when needed")
+        self.prepare_boundary = QtWidgets.QCheckBox("Isolate natural feature")
         self.prepare_boundary.setChecked(True)
-        self.prepare_boundary.setToolTip("Keeps the largest selected piece and may trim its border. Preview the resulting shape before keeping it. The retained scan surface is not smoothed or reconstructed.")
+        self.prepare_boundary.setToolTip("Use the painted area to identify a protrusion or recess, then trace its root at the surrounding wall. Protrusions get no added plate. Turn off only to build a backed surface patch from the painted outline.")
         layout.addWidget(self.prepare_boundary)
         layout.addWidget(button("Preview hold from selection", self.create_hold, True))
         self.hold_preview_text = label("Preview a shape, then Keep hold to add it to your library.")
@@ -281,8 +282,8 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addLayout(preview_row)
         layout.addWidget(label("Flat-backed shape", "section"))
         form = QtWidgets.QFormLayout()
-        self.backing = number(6, 0.5, 100)
-        self.edge_flare = number(10, 0, 100)
+        self.backing = number(0, 0, 100)
+        self.edge_flare = number(0, 0, 100)
         self.edge_flare.setToolTip("Minimum outward width. New shapes expand this as needed for a gradual wall return; the actual width is shown in the review. Legacy shapes retain their old taper until upgraded.")
         self.hold_scale = number(100, 5, 500, 1, " %")
         self.tilt_x = number(0, -70, 70, 1, "°")
@@ -293,9 +294,9 @@ class MainWindow(QtWidgets.QMainWindow):
         form.addRow("Back tilt X", self.tilt_x)
         form.addRow("Back tilt Y", self.tilt_y)
         layout.addLayout(form)
-        layout.addWidget(button("Rebuild selected hold", self.rebuild_hold))
-        layout.addWidget(button("Use gradual wall return", self.use_tapered_defaults))
-        layout.addWidget(label("Green is retained rock; amber is generated support. New shapes use a gradual wall return, at least twice the cut-edge height. Tall or abrupt cut edges may need a wider selection. Existing shapes keep their old edge until you choose Use gradual wall return. Hole positions and sizes are preserved and rechecked."))
+        layout.addWidget(button("Rebuild preview / selected hold", self.rebuild_hold))
+        layout.addWidget(button("Re-extract natural feature", self.use_tapered_defaults))
+        layout.addWidget(label("Raised features close at their natural root with 0 mm added backing and no surrounding plate. Recesses need material beneath and around the cavity. Green is scanned rock; amber is added material. Re-extract natural feature creates a new preview and keeps the old design intact."))
         layout.addStretch()
 
     def _mount_tab(self):
@@ -440,7 +441,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "2. In 1 Repair, click Preview repair & cleanup. Inspect yellow filled gaps and coral removed fragments. Click Apply preview.\n\n"
             "3. In 2 Holds, click Suggest holds and choose a result. Or select the Select hold brush below the viewer and RIGHT-drag over a small feature.\n\n"
             "4. Click Preview hold from selection. Edge preparation can trim a troublesome border while preserving the remaining surface. Inspect the result, then click Keep hold.\n\n"
-            "5. New shapes return gradually to the wall. Green shows rock and amber shows generated support. Review natural relief and contact separately from printability. Use gradual wall return upgrades old edges; difficult cuts may require selecting more surrounding low rock.\n\n"
+            "5. Keep Isolate natural feature checked. Protrusions close at their root without an added plate; recesses receive material under the cavity. Green shows rock and amber shows added support. Re-extract natural feature creates a replacement preview while keeping the old design.\n\n"
             "6. In 3 Mounts, the prototype bolt and screw profiles are ready to try. Their size requirements are shown below the profile buttons. Match actual hardware before printing. Generate mounts, preview the holes, and export STL.\n\n"
             "Left-drag rotates; the wheel zooms. Face scan looks straight at the surface. A wall scan is allowed to have an open outer edge; only the extracted hold must be closed.")
 
@@ -823,6 +824,7 @@ class MainWindow(QtWidgets.QMainWindow):
         name = f"Hold {len(self.project.holds) + 1:02}"
         def ready(hold):
             self.hold_preview = hold
+            self.shape_fields(hold)
             self.hold_preview_text.setText(hold.preparation + "\n" + review_text(hold) + "\nInspect green rock and amber support before keeping.")
             self.view_mode.setCurrentText("Hold preview")
             self.refresh(reset_camera=True)
@@ -837,7 +839,8 @@ class MainWindow(QtWidgets.QMainWindow):
             ready(cached)
             return
         def operation(ctx):
-            hold = prepare_hold(self.project.current, faces, name, ctx, round_boundary)
+            hold = (prepare_feature(self.project.current, faces, name, ctx) if round_boundary else
+                    prepare_hold(self.project.current, faces, name, ctx, round_boundary=False))
             hold.grip_review = assess_grip(hold, self.project.up, ctx)
             return hold
         self.run_job("Preparing a flat-backed shape preview…", operation, ready)
@@ -880,15 +883,20 @@ class MainWindow(QtWidgets.QMainWindow):
         if not hold:
             return
         self.hold_preview_text.setText(hold.preparation + "\n" + review_text(hold))
-        self.backing.setValue(hold.backing)
-        self.edge_flare.setValue(hold.edge_flare)
-        self.hold_scale.setValue(hold.scale * 100)
-        self.tilt_x.setValue(hold.tilt_x)
-        self.tilt_y.setValue(hold.tilt_y)
+        self.shape_fields(hold)
         self.mount_mode.setCurrentText(hold.mode)
         self.update_mount_list()
         self.view_mode.setCurrentText("Hold")
         self.refresh(reset_camera=True)
+
+    def shape_fields(self, hold):
+        self.backing.setMinimum(0. if hold.edge_style == "natural-base" else .5)
+        self.backing.setValue(hold.backing)
+        self.edge_flare.setValue(hold.edge_flare)
+        self.edge_flare.setEnabled(hold.edge_style != "natural-base")
+        self.hold_scale.setValue(hold.scale * 100)
+        self.tilt_x.setValue(hold.tilt_x)
+        self.tilt_y.setValue(hold.tilt_y)
 
     def rename_hold(self, item):
         if not self.hold:
@@ -909,13 +917,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self.show_scan()
             self.refresh()
 
-    def rebuild_hold(self, upgrade=False):
-        if not self.hold:
-            self.show_error("Create or select a hold first.")
+    def rebuild_hold(self):
+        target = self.hold_preview if self.hold_preview is not None else self.hold
+        if target is None:
+            self.show_error("Create a preview or select a hold first.")
             return
-        edited = deepcopy(self.hold)
-        if upgrade:
-            edited.edge_style = "wall-ramp"
+        editing_preview = self.hold_preview is not None
+        edited = deepcopy(target)
         edited.backing = self.backing.value()
         edited.edge_flare = self.edge_flare.value()
         edited.scale = self.hold_scale.value() / 100
@@ -926,16 +934,29 @@ class MainWindow(QtWidgets.QMainWindow):
             edited.grip_review = assess_grip(edited, self.project.up, ctx)
             return edited
         def ready(result):
-            self.project.holds[self.hold_index] = result
+            if editing_preview:
+                self.hold_preview = result
+            else:
+                self.project.holds[self.hold_index] = result
+                self.dirty = True
             self.hold_preview_text.setText(result.preparation + "\n" + review_text(result))
-            self.dirty = True
             self.update_mount_list()
-            self.view_mode.setCurrentText("Hold")
+            self.view_mode.setCurrentText("Hold preview" if editing_preview else "Hold")
             self.refresh()
         self.run_job("Updating backing geometry…", operation, ready)
 
     def use_tapered_defaults(self):
-        self.rebuild_hold(upgrade=True)
+        target = self.hold_preview if self.hold_preview is not None else self.hold
+        if target is None:
+            self.show_error("Select a saved hold or paint a feature first.")
+            return
+        if target.revision_id != self.project.current.id:
+            self.show_error("This design belongs to another scan revision. Select its feature on the current working scan to make a new preview.")
+            return
+        self.selected[:] = False
+        self.selected[target.face_indices] = True
+        self.prepare_boundary.setChecked(True)
+        self.create_hold()
 
     def update_profile_summary(self, *_):
         if not self.project:
@@ -1195,7 +1216,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.plotter.add_sphere_widget(lambda point, i=index: self.drag_mount(point, i),
                     center=(mount.x, mount.y, z), radius=max(2, extent.max() * 0.012),
                     color="#f0b77c", selected_color="#f9dfb8", test_callback=False)
-        state = "HOLD PREVIEW" if preview_hold is not None else ("DRILLED" if hold.result is not None else "TAPERED HOLD" if hold.edge_flare > 0 else "STRAIGHT-SIDED HOLD")
+        state = "HOLD PREVIEW" if preview_hold is not None else ("DRILLED" if hold.result is not None else "NATURAL FEATURE" if hold.edge_style == "natural-base" else "SUPPORTED SHAPE")
         self.plotter.add_text(f"{hold.name.upper()}  /  {state}\n" +
                              " × ".join(f"{x:.1f}" for x in extent) + " mm", position="upper_left", font_size=11, color="#c5e3d5")
 

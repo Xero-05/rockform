@@ -61,7 +61,7 @@ def assess_grip(hold, up=None, context=None):
         review['orientation'] = "Contact screened for the selected scan-up direction; inspect mounting orientation."
     else:
         directions = [np.array([np.cos(a), np.sin(a)]) for a in np.linspace(0, 2 * np.pi, 8, endpoint=False)]
-        review['orientation'] = "Scan up is unspecified or points out of the surface. Contact found only for orientation review; set an in-plane scan-up direction."
+        review['orientation'] = "Scan up is unspecified or points out of the surface. Screening searched possible rotations; set an in-plane scan-up direction to check the intended orientation."
     best = (0., 0., 0.)
     for direction in directions:
         facing_up = -(dx * direction[0] + dy * direction[1]) / length
@@ -94,5 +94,8 @@ def review_text(hold):
     if not review:
         return "This saved shape has not passed the current grip screen. Rebuild to assess it."
     status = "Broad-feature screen passed; inspect the natural contact." if review['eligible'] else "Manual shape only — excluded from automatic handhold suggestions."
-    return (f"{status}\nNatural relief: {review['relief_mm']:.1f} mm; wall return: {review['support_width_mm']:.1f} mm.\n"
+    support = (f"Raised feature: {hold.backing:.1f} mm added backing; no surrounding plate." if hold.feature_kind == "protrusion" else
+               f"Recess: {hold.backing:.1f} mm below the cavity; {review['support_width_mm']:.1f} mm outside support." if hold.feature_kind == "recess" else
+               f"Wall return: {review['support_width_mm']:.1f} mm.")
+    return (f"{status}\nNatural relief: {review['relief_mm']:.1f} mm. {support}\n"
             + " ".join(review['reasons']) + "\n" + review['orientation'])

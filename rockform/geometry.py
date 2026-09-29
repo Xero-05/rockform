@@ -255,8 +255,8 @@ def prepare_hold(revision, face_indices, name="Hold", context=None, round_bounda
 
 
 def oriented_patch(hold):
-    if hold.scale <= 0 or hold.backing <= 0:
-        raise GeometryError("Scale and added backing thickness must be positive.")
+    if hold.scale <= 0 or hold.backing < 0 or (hold.backing == 0 and hold.edge_style != "natural-base"):
+        raise GeometryError("Scale must be positive. Zero added backing is available for a feature closed at its natural base.")
     patch = hold.patch.copy()
     patch.vertices *= hold.scale
     rotation = trimesh.transformations.euler_matrix(np.radians(hold.tilt_x), np.radians(hold.tilt_y), 0)
@@ -289,7 +289,7 @@ def build_solid(hold, context=None):
         boundary = boundary[::-1]
         xy = xy[::-1]
         polygon = Polygon(xy)
-    if hold.edge_style not in ("wall-ramp", "legacy"):
+    if hold.edge_style not in ("wall-ramp", "legacy", "natural-base"):
         raise GeometryError("Unknown edge style. Choose Use gradual wall return to rebuild this hold.")
     if hold.edge_style == "wall-ramp":
         solid = _tapered_solid(patch, boundary, polygon, support_width(hold, patch, boundary), ctx, eased=False)
@@ -297,7 +297,7 @@ def build_solid(hold, context=None):
             raise GeometryError("The cut edge would create an artificial ledge. Include more low rock around the feature, "
                                 "or change the backing tilt. A narrow taper cannot fix a cut through tall rock.")
         return solid
-    if hold.edge_flare > 0:
+    if hold.edge_flare > 0 and hold.edge_style != "natural-base":
         return _tapered_solid(patch, boundary, polygon, hold.edge_flare, ctx)
     vertices = np.vstack([patch.vertices, np.column_stack([xy, np.zeros(len(xy))])])
     faces = patch.faces.tolist()
@@ -316,6 +316,9 @@ def build_solid(hold, context=None):
             raise GeometryError("Could not triangulate the back without altering the boundary.")
         faces.append((ids + base).tolist())
     solid = trimesh.Trimesh(vertices=vertices, faces=faces, process=True)
+    solid.update_faces(solid.nondegenerate_faces())
+    solid.update_faces(solid.unique_faces())
+    solid.remove_unreferenced_vertices()
     trimesh.repair.fix_normals(solid, multibody=True)
     validate_solid(solid, ctx)
     return solid
@@ -323,6 +326,8 @@ def build_solid(hold, context=None):
 
 def support_width(hold, patch=None, boundary=None):
     """A 1:2 fall to the wall replaces the fixed-width, eased upper shelf."""
+    if hold.edge_style == "natural-base":
+        return 0.
     if hold.edge_style == "legacy":
         return hold.edge_flare
     if patch is None:

@@ -7,6 +7,8 @@ import numpy as np
 import trimesh
 from .model import Project
 from .geometry import demo_scan, extract_hold
+from .features import prepare_feature
+from .grip import assess_grip
 from .cleanup import clean_revision, CleanupOptions
 from .mounts import generate_mounts, apply_mounts
 from .storage import save_project, load_project, export_hold
@@ -108,7 +110,8 @@ def run(destination):
             project.commit(preview.revision)
             mesh = project.current.mesh
             ids = np.flatnonzero((np.abs(mesh.triangles[:, :, :2]) < 95).all(axis=(1, 2)))
-            hold = extract_hold(project.current, ids, kind)
+            hold = prepare_feature(project.current, ids, kind)
+            hold.grip_review = assess_grip(hold, project.up)
             bolt, screw = project.profiles["bolt"], project.profiles["screw"]
             hold.mode = "bolt-on" if index != 1 else "screw-on"
             hold.mounts = generate_mounts(hold, bolt, screw, mode=hold.mode, count=3)
@@ -121,6 +124,7 @@ def run(destination):
             assert reimported.is_volume
             assert np.allclose(result.extents, reimported.extents, atol=1e-4)
             report["cases"].append(dict(name=kind, mode=hold.mode, mounts=len(hold.mounts),
+                                         feature_kind=hold.feature_kind, backing_mm=hold.backing,
                                          watertight=True, dimensions_mm=result.extents.tolist()))
         check_native_view(output, restored)
         report["native_view"] = "Opened and captured successfully"
