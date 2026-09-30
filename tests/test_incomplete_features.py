@@ -33,6 +33,22 @@ def test_damage_elsewhere_does_not_block_complete_feature():
     assert candidates[0].prepared_hold.solid.is_volume
 
 
+def test_branched_recess_boundary_does_not_abort_other_feature_recognition():
+    mesh = wall_with_feature('recess', resolution=41)
+    center = np.argmin(np.linalg.norm(mesh.vertices[:, :2], axis=1))
+    incident = np.flatnonzero((mesh.faces == center).any(axis=1))
+    first = incident[0]
+    opposite = next(i for i in incident if len(set(mesh.faces[first]) & set(mesh.faces[i])) == 1)
+    keep = np.ones(len(mesh.faces), dtype=bool)
+    keep[[first, opposite]] = False
+    mesh.update_faces(keep)
+    candidates, summary = suggest_holds(Revision(mesh), [0,1,0])
+    assert candidates and summary.needs_repair == 1
+    hold = candidates[0].prepared_hold
+    assert hold.feature_kind == 'recess' and hold.solid is None
+    assert 'branches' in hold.extraction['geometry_issue']
+
+
 def test_incomplete_feature_is_recognized_without_inventing_missing_surface(tmp_path):
     mesh = incomplete_scan()
     before = mesh.vertices.copy()

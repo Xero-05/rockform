@@ -16,7 +16,7 @@ The supplied `Rock_3DScanner.obj`, interpreted in millimeters as confirmed by th
 
 ### Validation and compatibility
 
-**69 tests passed.** Regression checks cover recognition without filling missing surfaces, complete features amid damaged surrounding scans, save/reopen of incomplete library items, disabled mounting/export, and explicit re-extraction after a repaired revision. Release acceptance exercises the final extracted executable on the sample workflows and three supplied scans.
+The full suite passed **69 tests**, followed by **four focused passing checks** after final fixes, including an added branching-boundary regression. These cover recognition without filling missing surfaces, complete features amid damaged surrounding scans, save/reopen of incomplete library items, disabled mounting/export, and explicit re-extraction after a repaired revision. Release acceptance exercises the final extracted executable on the sample workflows and three supplied scans.
 
 Older projects remain readable. New saves use **format 6** and require **Rockform 0.1.5 or later**. Preserve a copy for older-app compatibility. Private scans and derived review projects are excluded from release downloads.
 

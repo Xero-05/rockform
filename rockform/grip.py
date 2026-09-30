@@ -23,7 +23,8 @@ def assess_grip(hold, up=None, context=None):
     xy = np.column_stack([xx.ravel(), yy.ravel()])
     review = dict(criteria_version=1, eligible=False, relief_mm=0., contact_width_mm=0., contact_area_mm2=0.,
                   contact_depth_mm=0., orientation="", scan_up=None if up is None else np.asarray(up).tolist(),
-                  support_width_mm=float(support_width(hold)), geometry_ready=hold.solid is not None, reasons=[])
+                  support_width_mm=float(support_width(hold)) if hold.solid is not None else 0.,
+                  geometry_ready=hold.solid is not None, reasons=[])
     if min(xx.shape, default=0) < 3:
         review['reasons'].append("The retained surface is too small for broad-feature screening.")
         return review
