@@ -1,4 +1,19 @@
-# Rockform 0.1.5 validation
+# Rockform 0.1.6 validation
+
+Quick repair offers explicit downward fill and base trimming for incomplete raised features. It preserves the original feature inside the new design and in saved previews. Both methods require a connected, watertight, consistently oriented solid without detected intersections. Filling resolves overlapping projected rim segments; only numerical union seams and sub-0.01 mm³ slivers are removed. The fill's reported numerical surface tolerance is 0.001 mm. Trimming refuses protected regions, cuts still crossing missing data, and less than 3 mm remaining feature height.
+
+**76 tests passed** in 306.53 seconds. After the final mounting-footprint correction, all **six focused quick-repair tests passed** in 12.78 seconds. They cover folded rims, no surrounding plate, source preservation, STL round trips, save/reopen of the original and unkept repair previews, switching methods, restoration, protected areas, invalid cuts, cancellation, both mounting modes, and hardware sizes after resizing. Existing VTK/NumPy deprecation warnings remain non-fatal.
+
+Both repairs passed source-runtime acceptance on the supplied `Rock_3DScanner.obj` feature (millimeters):
+
+- Fill: **65.3 × 68.9 × 34.0 mm**, no surrounding plate and no through-openings.
+- Trim: **62.3 × 64.3 × 15.2 mm**, automatic cut **18.86 mm above the fitted wall**, no added sides.
+
+Both exported STLs were reimported and checked for connectivity, closure, consistent orientation, and intersections. Their originals survived save/reopen and a native-window draft save check. The input project hash remained unchanged. Private artifacts are under ignored `test-output/quick-016/source-acceptance-final/`.
+
+Release acceptance uses the final extracted Windows ZIP for the synthetic workflows, all three supplied scans, and both quick repairs via `--verify-quick-repair <project.rockform> <output-folder>`. It clears Python environment variables, limits PATH to Windows system directories, and checks the executable against its manifest before running. Publication requires all checks to pass. New saves use format 7; formats 1–6 remain readable.
+
+## Previous 0.1.5 validation
 
 Version 0.1.5 adds incomplete-feature recognition without presenting an open scan surface as a printable solid. Tests cover complete features surrounded by scan damage, preservation of missing surface data, save/reopen of incomplete library items, mounting/export rejection, and explicit re-extraction from a repaired revision without changing the old feature.
 

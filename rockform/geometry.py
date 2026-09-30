@@ -255,13 +255,17 @@ def prepare_hold(revision, face_indices, name="Hold", context=None, round_bounda
 
 
 def oriented_patch(hold):
-    if hold.scale <= 0 or hold.backing < 0 or (hold.backing == 0 and hold.edge_style != "natural-base"):
+    if hold.scale <= 0 or hold.backing < 0 or (hold.backing == 0 and hold.edge_style not in ("natural-base", "projected-base")):
         raise GeometryError("Scale must be positive. Zero added backing is available for a feature closed at its natural base.")
     patch = hold.patch.copy()
     patch.vertices *= hold.scale
     rotation = trimesh.transformations.euler_matrix(np.radians(hold.tilt_x), np.radians(hold.tilt_y), 0)
     patch.apply_transform(rotation)
     lift = hold.backing - patch.vertices[:, 2].min()
+    if hold.edge_style == "projected-base":
+        # Quick fill keeps the gap down to the measured wall instead of moving
+        # the lowest observed point onto it. Backing/tilt remain editable.
+        lift = hold.backing + max(0., -float(patch.vertices[:, 2].min()))
     patch.vertices[:, 2] += lift
     points = hold.protected_points * hold.scale
     if len(points):
@@ -278,6 +282,11 @@ def build_solid(hold, context=None):
     ctx = context or TaskContext()
     ctx.step(20, "Closing the hold against a flat back…")
     patch, _ = oriented_patch(hold)
+    if hold.edge_style == "projected-base":
+        from .quick_repair import project_to_back
+        solid = project_to_back(patch, ctx)
+        validate_solid(solid, ctx)
+        return solid
     loops = boundary_loops(patch)
     if len(loops) != 1:
         raise GeometryError("Select a patch with one outer boundary and no missing interior patches. Repair small scan gaps first.")
@@ -330,7 +339,7 @@ def build_solid(hold, context=None):
 
 def support_width(hold, patch=None, boundary=None):
     """A 1:2 fall to the wall replaces the fixed-width, eased upper shelf."""
-    if hold.edge_style == "natural-base":
+    if hold.edge_style in ("natural-base", "projected-base"):
         return 0.
     if hold.edge_style == "legacy":
         return hold.edge_flare
@@ -346,7 +355,14 @@ def generated_faces(hold, solid=None):
     solid = hold.solid if solid is None else solid
     patch, _ = oriented_patch(hold)
     distance = cKDTree(patch.triangles_center).query(solid.triangles_center)[0]
-    return (distance > 1e-5) & (solid.triangles[:, :, 2].max(axis=1) > 1e-6)
+    if hold.edge_style == "projected-base":
+        # Union may split a scanned triangle without changing its surface.
+        # A center-only match would incorrectly paint those fragments as added.
+        check = np.flatnonzero((distance > 1e-5) & (solid.triangles[:, :, 2].max(axis=1) > 1e-6))
+        if len(check):
+            distance[check] = trimesh.proximity.closest_point(patch, solid.triangles_center[check])[1]
+    tolerance = .001 if hold.edge_style == "projected-base" else 1e-5
+    return (distance > tolerance) & (solid.triangles[:, :, 2].max(axis=1) > 1e-6)
 
 
 def support_ledge_area(hold, solid=None):

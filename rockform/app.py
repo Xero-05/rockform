@@ -18,6 +18,7 @@ from .cleanup import CleanupOptions, clean_revision, gap_info
 from .detection import suggest_holds
 from .grip import assess_grip, review_text
 from .features import prepare_feature
+from .quick_repair import quick_repair, original_feature, suggested_trim_height, comparison_surface
 from .mounts import generate_mounts, apply_mounts, validate_mounts
 from .storage import import_scan, save_project, load_project, export_hold
 from .widgets import STYLE, label, button, number, ProfileDialog, Worker
@@ -64,7 +65,8 @@ class MainWindow(QtWidgets.QMainWindow):
                        "auto_fill_gaps", "gap_limit", "feature_min", "feature_max", "sensitivity",
                        "prepare_boundary", "backing", "edge_flare", "hold_scale", "tilt_x", "tilt_y",
                        "mount_mode", "anti_rotation", "screw_count", "mount_x", "mount_y", "drag_mounts",
-                       "cutaway", "cut_position", "brush_mode", "brush_radius", "compare")
+                       "cutaway", "cut_position", "brush_mode", "brush_radius", "compare",
+                       "quick_method", "auto_trim", "trim_height", "compare_repair")
 
     def workspace_changed(self, *_):
         if self.project is not None and not self.worker:
@@ -369,6 +371,30 @@ class MainWindow(QtWidgets.QMainWindow):
         self.prepare_boundary.setToolTip("Use the painted area to identify a protrusion or recess, then trace its root at the surrounding wall. Protrusions get no added plate. Turn off only to build a backed surface patch from the painted outline.")
         layout.addWidget(self.prepare_boundary)
         layout.addWidget(button("Preview hold from selection", self.create_hold, True))
+        layout.addWidget(label("Quick repair", "section"))
+        self.quick_method = QtWidgets.QComboBox()
+        self.quick_method.addItems(["Fill down to wall", "Trim damaged base"])
+        self.quick_method.setToolTip("For incomplete raised features. Fill adds material straight down to the fitted wall; trim removes the lower damaged portion.")
+        layout.addWidget(self.quick_method)
+        self.auto_trim = QtWidgets.QCheckBox("Find trim height automatically")
+        self.auto_trim.setChecked(True)
+        layout.addWidget(self.auto_trim)
+        self.trim_height = number(0, 0, 1000)
+        self.trim_height.setToolTip("Cut height above the fitted wall, in original scan millimeters. Turn off automatic height to adjust it.")
+        trim_form = QtWidgets.QFormLayout()
+        self.trim_label = QtWidgets.QLabel("Trim height above wall")
+        trim_form.addRow(self.trim_label, self.trim_height)
+        layout.addLayout(trim_form)
+        self.quick_repair_button = button("Preview quick repair", self.preview_quick_repair, True)
+        self.restore_feature_button = button("Restore original feature", self.restore_feature)
+        layout.addWidget(self.quick_repair_button)
+        layout.addWidget(self.restore_feature_button)
+        self.compare_repair = QtWidgets.QCheckBox("Show original feature in coral")
+        self.compare_repair.toggled.connect(lambda: self.refresh())
+        layout.addWidget(self.compare_repair)
+        self.quick_method.currentIndexChanged.connect(self.update_quick_controls)
+        self.auto_trim.toggled.connect(self.update_quick_controls)
+        layout.addWidget(label("Preview first, then Keep hold. The original is saved with the repair. Fill can cover undercuts; trim makes the feature shallower. Raised features only."))
         self.hold_preview_text = label("Preview a shape, then Keep hold to add it to your library.")
         layout.addWidget(self.hold_preview_text)
         preview_row = QtWidgets.QHBoxLayout()
@@ -539,6 +565,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "3. In 2 Holds, click Suggest holds and choose a result. Or select the Select hold brush below the viewer and RIGHT-drag over a small feature.\n\n"
             "4. Click Preview hold from selection. Edge preparation can trim a troublesome border while preserving the remaining surface. Inspect the result, then click Keep hold.\n\n"
             "5. Keep Isolate natural feature checked. Protrusions close at their root without an added plate; recesses receive material under the cavity. Green shows rock and amber shows added support. Re-extract natural feature creates a replacement preview while keeping the old design.\n\n"
+            "For a raised feature marked Needs repair, use Quick repair: Fill down to wall or Trim damaged base. Preview, compare the original in coral, then Keep hold. Restore original feature remains available after save/reopen.\n\n"
             "6. In 3 Mounts, the prototype bolt and screw profiles are ready to try. Their size requirements are shown below the profile buttons. Match actual hardware before printing. Generate mounts, preview the holes, and export STL.\n\n"
             "7. Save project preserves kept holds, unfinished previews, painted selections and your view. Reopen the .rockform file with Open project to continue. Keep hold and Apply preview still require your acceptance.\n\n"
             "Left-drag rotates; the wheel zooms. Face scan looks straight at the surface. A wall scan is allowed to have an open outer edge; only the extracted hold must be closed.")
@@ -957,7 +984,9 @@ class MainWindow(QtWidgets.QMainWindow):
     def accept_hold_preview(self):
         if not self.project or self.hold_preview is None or self.worker:
             return
-        if self.hold_preview.revision_id != self.project.current.id:
+        bound_repair = (self.hold_preview.repair_source is not None and any(
+            r.id == self.hold_preview.revision_id for r in self.project.revisions + self.project.archived_revisions))
+        if self.hold_preview.revision_id != self.project.current.id and not bound_repair:
             self.show_error("The scan has changed. Preview the hold again before keeping it.")
             return
         self.project.holds.append(self.hold_preview)
@@ -1003,13 +1032,70 @@ class MainWindow(QtWidgets.QMainWindow):
         self.refresh(reset_camera=True)
 
     def shape_fields(self, hold):
-        self.backing.setMinimum(0. if hold.edge_style == "natural-base" else .5)
+        self.backing.setMinimum(0. if hold.edge_style in ("natural-base", "projected-base") else .5)
         self.backing.setValue(hold.backing)
         self.edge_flare.setValue(hold.edge_flare)
-        self.edge_flare.setEnabled(hold.edge_style != "natural-base")
+        self.edge_flare.setEnabled(hold.edge_style not in ("natural-base", "projected-base"))
         self.hold_scale.setValue(hold.scale * 100)
         self.tilt_x.setValue(hold.tilt_x)
         self.tilt_y.setValue(hold.tilt_y)
+        if hold.feature_kind == "protrusion" and (hold.solid is None or hold.repair_source is not None):
+            try:
+                self.trim_height.setValue(hold.extraction.get("quick_repair", {}).get(
+                    "trim_height_above_wall_mm", suggested_trim_height(hold)))
+            except GeometryError:
+                pass
+
+    def quick_target(self):
+        if self.view_mode.currentText() == "Hold" and self.hold is not None:
+            return self.hold
+        return self.hold_preview if self.hold_preview is not None else self.hold
+
+    def update_quick_controls(self, *_):
+        target = self.quick_target()
+        enabled = (target is not None and target.feature_kind == "protrusion" and
+                   (target.solid is None or target.repair_source is not None) and not self.worker)
+        self.quick_repair_button.setEnabled(enabled)
+        self.restore_feature_button.setEnabled(enabled and target.repair_source is not None)
+        self.compare_repair.setEnabled(target is not None and target.repair_source is not None)
+        trimming = self.quick_method.currentIndex() == 1
+        self.auto_trim.setVisible(trimming)
+        self.trim_label.setVisible(trimming)
+        self.trim_height.setVisible(trimming)
+        self.auto_trim.setEnabled(enabled and trimming)
+        self.trim_height.setEnabled(enabled and trimming and not self.auto_trim.isChecked())
+
+    def preview_quick_repair(self):
+        target = self.quick_target()
+        if target is None or self.worker:
+            return
+        source = deepcopy(target)
+        method = "fill" if self.quick_method.currentIndex() == 0 else "trim"
+        height = None if self.auto_trim.isChecked() else self.trim_height.value()
+        up = self.project.up.copy()
+        def ready(hold):
+            self.hold_preview = hold
+            self.dirty = True
+            self.shape_fields(hold)
+            if method == "trim":
+                self.trim_height.setValue(hold.extraction["quick_repair"]["trim_height_above_wall_mm"])
+            self.hold_preview_text.setText(hold.preparation + "\n" + review_text(hold))
+            self.view_mode.setCurrentText("Hold preview")
+            self.refresh(reset_camera=True)
+            self.activity.setText("Repair preview ready. Compare with the original, then Keep hold or Restore original feature.")
+            QtCore.QTimer.singleShot(0, lambda: self.tabs.widget(1).ensureWidgetVisible(self.keep_hold_button))
+        self.run_job("Preparing quick repair…", lambda ctx: quick_repair(source, method, height, up, ctx), ready)
+
+    def restore_feature(self):
+        target = self.quick_target()
+        if target is None or target.repair_source is None or self.worker:
+            return
+        self.hold_preview = original_feature(target)
+        self.dirty = True
+        self.shape_fields(self.hold_preview)
+        self.hold_preview_text.setText(self.hold_preview.preparation + "\n" + review_text(self.hold_preview))
+        self.view_mode.setCurrentText("Hold preview")
+        self.refresh(reset_camera=True)
 
     def rename_hold(self, item):
         if not self.hold:
@@ -1268,6 +1354,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.keep_hold_button.setEnabled(self.hold_preview is not None)
         self.keep_hold_button.setText("Keep feature for repair" if self.hold_preview is not None and self.hold_preview.solid is None else "Keep hold")
         self.discard_hold_button.setEnabled(self.hold_preview is not None)
+        self.update_quick_controls()
         self.undo_button.setEnabled(bool(self.project and self.project.cursor > 0))
         self.redo_button.setEnabled(bool(self.project and self.project.cursor < len(self.project.revisions) - 1))
         try:
@@ -1344,9 +1431,12 @@ class MainWindow(QtWidgets.QMainWindow):
                                   position="lower_left", font_size=9, color="#f4b4a3")
         elif hold.result is None:
             self.plotter.add_mesh(display, scalars="Surface origin", rgb=True, smooth_shading=False, specular=0.12)
-            self.plotter.add_text("Green: scanned rock   |   Amber: generated wall return", position="lower_left", font_size=9, color="#c5e3d5")
+            self.plotter.add_text("Green: scanned rock   |   Amber: added material / flat back", position="lower_left", font_size=9, color="#c5e3d5")
         else:
             self.plotter.add_mesh(display, color="#a1c6b5", smooth_shading=False, specular=0.12)
+        if self.compare_repair.isChecked() and hold.repair_source is not None:
+            self.plotter.add_mesh(polydata(comparison_surface(hold)), style="wireframe", color="#ff937c",
+                                  opacity=.28, pickable=False)
         extent = mesh.extents
         plane = pv.Plane(center=(mesh.centroid[0], mesh.centroid[1], -0.25), direction=(0, 0, 1),
                          i_size=extent[0] * 1.2, j_size=extent[1] * 1.2, i_resolution=10, j_resolution=10)

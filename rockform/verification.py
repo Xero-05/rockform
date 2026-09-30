@@ -70,6 +70,56 @@ def run_scan(source, destination):
     return 0 if report["passed"] else 1
 
 
+def run_quick_repair(source, destination):
+    """Exercise both explicit repairs on a saved incomplete feature."""
+    from hashlib import sha256
+    from .quick_repair import quick_repair, original_feature
+    from .geometry import validate_solid
+    output = Path(destination)
+    output.mkdir(parents=True, exist_ok=True)
+    report = dict(frozen=bool(getattr(sys, "frozen", False)), repairs=[], passed=False)
+    try:
+        before = sha256(Path(source).read_bytes()).hexdigest()
+        project = load_project(source)
+        feature = next(h for h in project.holds if h.solid is None and h.feature_kind == 'protrusion')
+        repairs = []
+        from .model import TaskContext
+        last_message = [None]
+        def progress(percent, message):
+            if message != last_message[0]:
+                print(message, flush=True)
+                last_message[0] = message
+        context = TaskContext(progress)
+        for method in ('fill', 'trim'):
+            print(f'Checking quick repair: {method}', flush=True)
+            repaired = quick_repair(feature, method, up=project.up, context=context)
+            repaired.name = f'Quick repair - {method}'
+            print(f'Repaired solid: {len(repaired.solid.faces)} triangles', flush=True)
+            result, stl, _ = export_hold(repaired, output/f'{method}.stl', context)
+            reimported = trimesh.load_mesh(stl)
+            validate_solid(reimported, context)
+            assert np.allclose(result.extents, reimported.extents, atol=1e-4)
+            assert np.array_equal(original_feature(repaired).patch.vertices, feature.patch.vertices)
+            repairs.append(repaired)
+            report['repairs'].append(dict(method=method, dimensions_mm=result.extents.tolist(),
+                                         watertight=True, metadata=repaired.extraction['quick_repair']))
+        project.holds = repairs + [feature]
+        project.workspace = {}
+        project.pending_hold = None
+        save_project(project, output/'Quick repair examples.rockform')
+        restored = load_project(output/'Quick repair examples.rockform')
+        for hold in restored.holds[:2]:
+            assert hold.repair_source.solid is None and hold.solid.is_volume
+            assert np.array_equal(hold.repair_source.patch.vertices, feature.patch.vertices)
+        check_native_view(output, restored, tab=1)
+        assert sha256(Path(source).read_bytes()).hexdigest() == before
+        report.update(passed=True, source_unchanged=True, native_view='Opened repaired hold; saved/reopened repair draft with its original source')
+    except Exception:
+        report['error'] = traceback.format_exc()
+    (output/'quick-repair-verification.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
+    return 0 if report['passed'] else 1
+
+
 def check_native_view(output, project, tab=2):
     """Verify Qt, the OpenGL viewer, and bundled fonts/plugins in the executable."""
     from PySide6 import QtCore, QtWidgets

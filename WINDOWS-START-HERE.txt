@@ -1,7 +1,7 @@
-ROCKFORM 0.1.5 - WINDOWS PROTOTYPE
+ROCKFORM 0.1.6 - WINDOWS PROTOTYPE
 
 START THE APP
-1. Download Rockform-0.1.5-Windows-x64.zip from the GitHub release.
+1. Download Rockform-0.1.6-Windows-x64.zip from the GitHub release.
 2. Use Extract All to unpack the entire ZIP.
 3. Open the extracted folder and double-click Rockform.exe.
 
@@ -24,15 +24,17 @@ Export STL for your slicer in millimeters. Save project to keep editable work.
 The Guide button explains the workflow. Right-drag paints with a selected brush;
 left-drag rotates the view and the mouse wheel zooms.
 
-NEW IN 0.1.5
-Incomplete scans can still contain recognizable features. Suggestions marked
-Needs repair show the available scanned surface and highlight missing boundaries
-in coral. Keep feature for repair saves it in your library and project.
-Repair the scan, then use Re-extract natural feature to review a new version.
-Mounting and STL export stay disabled until the feature forms a valid solid.
-Large or uneven missing areas may still require another scan.
+NEW IN 0.1.6
+Select a raised feature marked Needs repair, then use 2 Holds > Quick repair.
+Fill down to wall adds material below the observed surface without a plate.
+Trim damaged base cuts off the lower damaged portion; adjust its height if needed.
+Click Preview quick repair, compare the original in coral, then Keep hold.
+Amber shows added material. Fill can cover undercuts; trim makes the hold shallower.
+Restore original feature remains available after saving and reopening.
+Both options must pass solid checks before mounting/export. Recesses still use
+scan gap repair to preserve their cavity. Missing front patches may need a rescan.
 Projects keep previews, selections, settings and the saved view. New saves use
-format 6 and require Rockform 0.1.5 or later; older projects remain readable.
+format 7 and require Rockform 0.1.6 or later; older projects remain readable.
 
 The supplied Scaniverse scan now yields a roughly 135 x 94 x 38 mm natural feature.
 Both default mounting modes fit geometrically without adding backing. Match the
@@ -40,7 +42,7 @@ editable prototype profiles to your actual hardware before printing.
 
 TESTING STATUS
 Tested on the development Windows 11 x64 computer, including the standalone
-runtime, 3D viewer, synthetic examples, and one real Scaniverse scan. Other PCs,
+runtime, 3D viewer, synthetic examples, and supplied real scans. Other PCs,
 Windows versions, graphics drivers, slicers, and physical prints need independent
 testing. The application requires a working OpenGL-capable graphics driver.
 

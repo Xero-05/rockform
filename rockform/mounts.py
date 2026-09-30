@@ -36,17 +36,28 @@ def _boolean(meshes, operation):
 
 def footprint(hold):
     patch, protected = oriented_patch(hold)
-    loops = boundary_loops(patch)
-    if len(loops) != 1:
-        raise GeometryError("Rebuild a valid flat-backed hold first.")
-    polygon = Polygon(patch.vertices[loops[0], :2])
-    if not polygon.is_valid:
-        raise GeometryError("The projected hold boundary overlaps. Adjust the backing plane.")
-    width = support_width(hold, patch, loops[0])
-    if width > 0:
-        polygon = polygon.buffer(width, quad_segs=3)
     if hold.solid is None:
         raise GeometryError("Rebuild the hold before placing mounting holes.")
+    if hold.edge_style == "projected-base":
+        # The original damaged rim may overlap in projection. Mounts use the
+        # repaired solid's actual flat base, including any through-openings.
+        base = hold.solid.triangles[(np.abs(hold.solid.triangles[:, :, 2]) < 1e-7).all(axis=1)]
+        polygon = unary_union([Polygon(t[:, :2]) for t in base])
+        if polygon.is_empty or polygon.geom_type != 'Polygon':
+            raise GeometryError("The repaired hold has no connected flat base for mounting.")
+        body = polygon
+        width = 0.
+    else:
+        loops = boundary_loops(patch)
+        if len(loops) != 1:
+            raise GeometryError("Rebuild a valid flat-backed hold first.")
+        polygon = Polygon(patch.vertices[loops[0], :2])
+        body = polygon
+        width = support_width(hold, patch, loops[0])
+    if not polygon.is_valid:
+        raise GeometryError("The projected hold boundary overlaps. Adjust the backing plane.")
+    if width > 0:
+        polygon = polygon.buffer(width, quad_segs=3)
     # Check the rock AND generated tapered edge, excluding only the flat back.
     top_faces = np.flatnonzero((hold.solid.triangles[:, :, 2] > 1e-7).any(axis=1))
     surface = hold.solid.submesh([top_faces], append=True, repair=False)
@@ -56,7 +67,6 @@ def footprint(hold):
         triangles = trimesh.transform_points(hold.protected_triangles.reshape(-1, 3) * hold.scale, rotation).reshape(-1, 3, 3)
         polygons = [Polygon(t[:, :2]) for t in triangles]
         protected_region = unary_union([p for p in polygons if p.is_valid and p.area > 1e-8])
-    body = Polygon(patch.vertices[loops[0], :2])
     return polygon, surface, (protected, protected_region, body)
 
 

@@ -125,6 +125,7 @@ class Hold:
     grip_review: dict = field(default_factory=dict)
     feature_kind: str = "manual"
     extraction: dict = field(default_factory=dict)
+    repair_source: Hold | None = None
 
 
 @dataclass
