@@ -23,7 +23,7 @@ def assess_grip(hold, up=None, context=None):
     xy = np.column_stack([xx.ravel(), yy.ravel()])
     review = dict(criteria_version=1, eligible=False, relief_mm=0., contact_width_mm=0., contact_area_mm2=0.,
                   contact_depth_mm=0., orientation="", scan_up=None if up is None else np.asarray(up).tolist(),
-                  support_width_mm=float(support_width(hold)), reasons=[])
+                  support_width_mm=float(support_width(hold)), geometry_ready=hold.solid is not None, reasons=[])
     if min(xx.shape, default=0) < 3:
         review['reasons'].append("The retained surface is too small for broad-feature screening.")
         return review
@@ -79,13 +79,13 @@ def assess_grip(hold, up=None, context=None):
     if best[1] == 0:
         review['reasons'].append("No continuous natural contact slope with 20 mm width, 80 mm² area and 6 mm depth was found away from the cut edge.")
     ctx.step(65, "Checking that generated edges do not dominate the feature…")
-    if support_ledge_area(hold) >= 25.:
+    if hold.solid is not None and support_ledge_area(hold) >= 25.:
         review['reasons'].append("The added edge contains an artificial ledge. Rebuild with a gradual wall return or change the selection.")
     # Large skirts indicate the selection cuts through a tall feature instead of
     # returning to low surrounding rock. Do not call that a handhold suggestion.
     # A recess needs a body at least as deep as the cavity. Its broad gradual
     # outside return is intentional, not evidence of cutting through a protrusion.
-    if hold.feature_kind != "recess" and review['support_width_mm'] > min(40., float(patch.extents[:2].min()) * .6):
+    if hold.solid is not None and hold.feature_kind != "recess" and review['support_width_mm'] > min(40., float(patch.extents[:2].min()) * .6):
         review['reasons'].append(f"The cut edge needs a {review['support_width_mm']:.0f} mm wall return, which would dominate this feature. Include surrounding low rock or adjust the backing plane.")
     review['eligible'] = not review['reasons']
     return review
@@ -95,6 +95,11 @@ def review_text(hold):
     review = hold.grip_review
     if not review:
         return "This saved shape has not passed the current grip screen. Rebuild to assess it."
+    if hold.solid is None:
+        return (f"Recognized feature — needs repair before mounting or export.\n"
+                f"Measured natural relief: {review['relief_mm']:.1f} mm. "
+                "Coral lines mark open or damaged boundaries. Repair the source scan and re-extract; this feature stays saved for reference.\n"
+                + " ".join(review['reasons']) + "\n" + review['orientation'])
     status = "Broad-feature screen passed; inspect the natural contact." if review['eligible'] else "Manual shape only — excluded from automatic handhold suggestions."
     support = (f"Raised feature: {hold.backing:.1f} mm added backing; no surrounding plate." if hold.feature_kind == "protrusion" else
                f"Recess: {hold.backing:.1f} mm below the cavity; {review['support_width_mm']:.1f} mm outside support." if hold.feature_kind == "recess" else

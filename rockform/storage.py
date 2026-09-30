@@ -109,7 +109,7 @@ def _hold_read(archive, record):
 def save_project(project, path, context=None):
     ctx = context or TaskContext()
     destination = Path(path)
-    data = dict(version=5, source_name=project.source_name, scale_factor=project.scale_factor, source_units=project.source_units,
+    data = dict(version=6, source_name=project.source_name, scale_factor=project.scale_factor, source_units=project.source_units,
                 up=project.up.tolist(), cursor=project.cursor,
                 profiles={k: asdict(v) for k, v in project.profiles.items()}, revisions=[], archived=[], holds=[],
                 workspace=project.workspace)
@@ -155,7 +155,7 @@ def load_project(path, context=None):
         if sum(i.file_size for i in archive.infolist()) > 2_000_000_000:
             raise GeometryError("This project expands beyond the 2 GB project limit.")
         data = json.loads(archive.read("project.json"))
-        if data.get("version") not in (1, 2, 3, 4, 5):
+        if data.get("version") not in (1, 2, 3, 4, 5, 6):
             raise GeometryError("Unsupported project version.")
         original, _ = _mesh_read(archive, "original.npz")
         def revisions(kind):

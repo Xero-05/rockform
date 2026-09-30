@@ -363,7 +363,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.candidate_list.setMaximumHeight(150)
         self.candidate_list.currentRowChanged.connect(self.choose_candidate)
         layout.addWidget(self.candidate_list)
-        layout.addWidget(label("Choose a suggestion, or set the brush to Select hold and RIGHT-drag over the scan. Suggestions need broad natural relief and a contact slope away from the cut edge. No suitable features is a valid result."))
+        layout.addWidget(label("Choose a suggestion, or RIGHT-drag with Select hold. Needs repair identifies a visible feature with incomplete geometry; inspect the coral boundaries. You can keep it for repair, but mounting and export require a closed solid."))
         self.prepare_boundary = QtWidgets.QCheckBox("Isolate natural feature")
         self.prepare_boundary.setChecked(True)
         self.prepare_boundary.setToolTip("Use the painted area to identify a protrusion or recess, then trace its root at the surrounding wall. Protrusions get no added plate. Turn off only to build a backed surface patch from the painted outline.")
@@ -948,7 +948,7 @@ class MainWindow(QtWidgets.QMainWindow):
             ready(cached)
             return
         def operation(ctx):
-            hold = (prepare_feature(self.project.current, faces, name, ctx) if round_boundary else
+            hold = (prepare_feature(self.project.current, faces, name, ctx, allow_incomplete=True) if round_boundary else
                     prepare_hold(self.project.current, faces, name, ctx, round_boundary=False))
             hold.grip_review = assess_grip(hold, self.project.up, ctx)
             return hold
@@ -966,8 +966,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dirty = True
         self.update_hold_list()
         self.select_hold(self.hold_index)
-        self.hold_preview_text.setText(review_text(self.hold) + "\nSaved in the library. Open 3 Mounts to add hardware.")
-        self.activity.setText("Hold kept. Open 3 Mounts to choose hardware and add mounting holes.")
+        self.hold_preview_text.setText(review_text(self.hold) +
+            ("\nSaved for repair. Open 1 Repair to inspect the scan." if self.hold.solid is None else
+             "\nSaved in the library. Open 3 Mounts to add hardware."))
+        self.activity.setText("Feature saved for repair. Repair the scan, then Re-extract natural feature."
+                              if self.hold.solid is None else "Hold kept. Open 3 Mounts to choose hardware and add mounting holes.")
 
     def discard_hold_preview(self):
         self.hold_preview = None
@@ -981,7 +984,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.hold_list.clear()
         if self.project:
             for hold in self.project.holds:
-                self.hold_list.addItem(hold.name)
+                self.hold_list.addItem(hold.name + (" · Needs repair" if hold.solid is None else ""))
             self.hold_list.setCurrentRow(self.hold_index)
         self.hold_list.blockSignals(False)
 
@@ -1062,10 +1065,21 @@ class MainWindow(QtWidgets.QMainWindow):
             self.show_error("Select a saved hold or paint a feature first.")
             return
         if target.revision_id != self.project.current.id:
-            self.show_error("This design belongs to another scan revision. Select its feature on the current working scan to make a new preview.")
-            return
+            if target.extraction.get("geometry_status") != "needs-repair":
+                self.show_error("This design belongs to another scan revision. Select its feature on the current working scan to make a new preview.")
+                return
+            # Only an explicit re-extraction maps the saved incomplete feature
+            # onto a repaired revision. The old design and its binding are kept.
+            world = trimesh.transform_points(target.patch.triangles_center, np.linalg.inv(target.frame))
+            distance, ids = cKDTree(self.project.current.mesh.triangles_center).query(world)
+            faces = np.unique(ids[distance <= 2.])
+            if len(faces) < 4:
+                self.show_error("The saved feature is no longer present in this scan revision. Select its area again.")
+                return
+        else:
+            faces = target.face_indices
         self.selected[:] = False
-        self.selected[target.face_indices] = True
+        self.selected[faces] = True
         self.prepare_boundary.setChecked(True)
         self.create_hold()
 
@@ -1214,8 +1228,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.run_job("Cutting and checking the hold…", lambda ctx: apply_mounts(hold, ctx), ready)
 
     def export_dialog(self):
+        if self.hold_preview is not None:
+            self.show_error("Keep or discard the current preview before exporting a saved hold.")
+            return
         if not self.hold:
             self.show_error("Select a hold to export.")
+            return
+        if self.hold.solid is None:
+            self.show_error("This recognized feature needs repair before STL export. Its scanned surface is saved in the project.")
             return
         path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export printable prototype", self.hold.name + ".stl", "STL mesh (*.stl)")
         if not path:
@@ -1240,10 +1260,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.scan_poly = None
         self.plotter.add_axes(color="#a4b7b9")
         self.save_button.setEnabled(self.project is not None)
-        self.export_button.setEnabled(self.hold is not None)
+        printable = self.hold is not None and self.hold.solid is not None and self.hold_preview is None
+        self.export_button.setEnabled(printable)
+        self.tabs.setTabEnabled(2, bool(printable))
         self.accept_button.setEnabled(self.preview is not None)
         self.reject_button.setEnabled(self.preview is not None)
         self.keep_hold_button.setEnabled(self.hold_preview is not None)
+        self.keep_hold_button.setText("Keep feature for repair" if self.hold_preview is not None and self.hold_preview.solid is None else "Keep hold")
         self.discard_hold_button.setEnabled(self.hold_preview is not None)
         self.undo_button.setEnabled(bool(self.project and self.project.cursor > 0))
         self.redo_button.setEnabled(bool(self.project and self.project.cursor < len(self.project.revisions) - 1))
@@ -1260,7 +1283,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 mode = self.view_mode.currentText()
                 if mode == "Hold preview" and self.hold_preview is not None:
                     self._render_hold(self.hold_preview)
-                elif mode == "Hold" and self.hold and self.hold.solid is not None:
+                elif mode == "Hold" and self.hold:
                     self._render_hold()
                 else:
                     display = self.project.original if mode == "Original scan" else (self.preview.revision.mesh if mode == "Cleanup preview" and self.preview else mesh)
@@ -1299,16 +1322,27 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _render_hold(self, preview_hold=None):
         hold = preview_hold if preview_hold is not None else self.hold
-        mesh = hold.result if hold.result is not None else hold.solid
+        incomplete = hold.solid is None
+        mesh = hold.patch if incomplete else hold.result if hold.result is not None else hold.solid
         display = polydata(mesh)
-        if hold.result is None:
+        if hold.result is None and not incomplete:
             colors = np.tile([161, 198, 181], (len(mesh.faces), 1)).astype(np.uint8)
             colors[generated_faces(hold) | (mesh.triangles[:, :, 2].max(axis=1) < 1e-6)] = [209, 158, 99]
             display.cell_data["Surface origin"] = colors
-        if self.cutaway.isChecked():
+        if self.cutaway.isChecked() and not incomplete:
             x = mesh.bounds[0, 0] + mesh.extents[0] * self.cut_position.value() / 100
             display = display.clip(normal="x", origin=(x, 0, 0))
-        if hold.result is None:
+        if incomplete:
+            self.plotter.add_mesh(display, color="#a1c6b5", smooth_shading=False)
+            edges, counts = np.unique(np.sort(mesh.edges, axis=1), axis=0, return_counts=True)
+            # A level cut at the wall can be closed by a flat underside; only
+            # highlight boundaries that need actual scan data or topology repair.
+            damaged = edges[(counts != 2) & ((counts > 2) | (np.abs(mesh.vertices[edges, 2]) > 1e-4).any(axis=1))]
+            if len(damaged):
+                self.plotter.add_lines(mesh.vertices[damaged].reshape(-1, 3), color="#ff937c", width=4)
+            self.plotter.add_text("Scanned surface only · Coral: missing / damaged boundary · Repair before export",
+                                  position="lower_left", font_size=9, color="#f4b4a3")
+        elif hold.result is None:
             self.plotter.add_mesh(display, scalars="Surface origin", rgb=True, smooth_shading=False, specular=0.12)
             self.plotter.add_text("Green: scanned rock   |   Amber: generated wall return", position="lower_left", font_size=9, color="#c5e3d5")
         else:
@@ -1327,7 +1361,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.plotter.add_sphere_widget(lambda point, i=index: self.drag_mount(point, i),
                     center=(mount.x, mount.y, z), radius=max(2, extent.max() * 0.012),
                     color="#f0b77c", selected_color="#f9dfb8", test_callback=False)
-        state = "HOLD PREVIEW" if preview_hold is not None else ("DRILLED" if hold.result is not None else "NATURAL FEATURE" if hold.edge_style == "natural-base" else "SUPPORTED SHAPE")
+        state = "RECOGNIZED FEATURE · NEEDS REPAIR" if incomplete else "HOLD PREVIEW" if preview_hold is not None else ("DRILLED" if hold.result is not None else "NATURAL FEATURE" if hold.edge_style == "natural-base" else "SUPPORTED SHAPE")
         self.plotter.add_text(f"{hold.name.upper()}  /  {state}\n" +
                              " × ".join(f"{x:.1f}" for x in extent) + " mm", position="upper_left", font_size=11, color="#c5e3d5")
 

@@ -27,7 +27,7 @@ def run_scan(source, destination):
     output = Path(destination)
     output.mkdir(parents=True, exist_ok=True)
     report = dict(frozen=bool(getattr(sys, "frozen", False)), source=Path(source).name,
-                  purpose="Review shapes only; no hardware dimensions assumed", holds=[], passed=False)
+                  purpose="Review shapes only; no hardware dimensions assumed", holds=[], incomplete_features=[], passed=False)
     try:
         before = sha256(Path(source).read_bytes()).hexdigest()
         project = import_scan(source)
@@ -44,6 +44,10 @@ def run_scan(source, destination):
             hold = candidate.prepared_hold
             hold.name = f"Scan hold {i + 1:02}"
             project.holds.append(hold)
+            if hold.solid is None:
+                report["incomplete_features"].append(dict(name=hold.name, dimensions_mm=hold.patch.extents.tolist(),
+                    status="needs-repair", reason=hold.extraction.get("geometry_issue"), grip_screen=hold.grip_review))
+                continue
             result, stl, settings = export_hold(hold, output / f"Scan hold {i + 1:02}.stl")
             reimported = trimesh.load_mesh(stl)
             validate_solid(reimported)
@@ -90,6 +94,7 @@ def check_native_view(output, project, tab=2):
         window.selected[window.hold_preview.face_indices] = True
         window.view_mode.setCurrentText('Hold preview')
     window.capture_workspace()
+    saved_tab = window.tabs.currentIndex()
     workspace_path = output / 'Workspace save check.rockform'
     save_project(project, workspace_path)
     restored = load_project(workspace_path)
@@ -99,7 +104,7 @@ def check_native_view(output, project, tab=2):
         assert window.hold_preview is not None and window.view_mode.currentText() == 'Hold preview'
         assert np.array_equal(window.hold_preview.patch.vertices, project.holds[0].patch.vertices)
         assert window.selected.any()
-        assert window.tabs.currentIndex() == tab
+        assert window.tabs.currentIndex() == saved_tab
     project.workspace = {}
     project.pending_hold = None
     window.set_project(project)

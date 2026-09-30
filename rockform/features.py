@@ -92,25 +92,30 @@ def raised_patches(revision, reference, context=None, kind="protrusion"):
     return pieces
 
 
-def protrusion_hold(revision, patch, reference, name="Hold", context=None, kind="protrusion"):
+def protrusion_hold(revision, patch, reference, name="Hold", context=None, kind="protrusion", allow_incomplete=False):
     ctx = context or TaskContext()
     patch = patch.copy()
+    issue = ""
+    loops = []
+    cut_height = reference.tolerance if kind == "protrusion" else -reference.tolerance
     try:
         loops = boundary_loops(patch)
+        if len(loops) != 1:
+            raise GeometryError("This feature has missing scan data inside its outline. Preview scan repair or rescan the gap.")
+        edge = patch.vertices[loops[0], 2]
+        if np.max(np.abs(edge - cut_height)) > 1e-4:
+            raise GeometryError("The feature reaches an open scan edge before returning to the wall. Its base or side is incomplete; include more of the feature in the scan.")
     except GeometryError as error:
-        raise GeometryError(f"This feature has broken boundaries or missing scan data. Preview scan repair or rescan the gap. Detail: {error}") from error
-    if len(loops) != 1:
-        raise GeometryError("This feature has missing scan data inside its outline. Preview scan repair or rescan the gap.")
-    edge = patch.vertices[loops[0], 2]
-    cut_height = reference.tolerance if kind == "protrusion" else -reference.tolerance
-    if np.max(np.abs(edge - cut_height)) > 1e-4:
-        raise GeometryError("The feature reaches an open scan edge before returning to the wall. Include more surrounding rock in the scan.")
+        issue = f"This feature has broken boundaries or missing scan data. Detail: {error}"
+        if not allow_incomplete:
+            raise GeometryError(issue) from error
     # Place the natural root contour exactly on the mounting plane; this is a
     # rigid translation of retained triangles, not a reconstruction of the grip.
     frame = reference.frame.copy()
     frame[2, 3] -= cut_height
     patch.vertices[:, 2] -= cut_height
-    patch.vertices[loops[0], 2] = 0.
+    if not issue:
+        patch.vertices[loops[0], 2] = 0.
     center = patch.bounds.mean(axis=0)[:2]
     frame[:2, 3] -= center
     patch.vertices[:, :2] -= center
@@ -127,6 +132,15 @@ def protrusion_hold(revision, patch, reference, name="Hold", context=None, kind=
                 edge_style="natural-base", feature_kind=kind,
                 extraction=dict(wall_offset_mm=cut_height, wall_noise_mm=reference.noise,
                                 wall_support_fraction=reference.inlier_fraction))
+    if issue and loops:
+        outer = max(range(len(loops)), key=lambda i: np.linalg.norm(np.ptp(patch.vertices[loops[i]], axis=0)))
+        boundaries = []
+        for i, loop in enumerate(loops):
+            points = patch.vertices[loop]
+            if i != outer or np.max(np.abs(points[:, 2])) > 1e-4:
+                boundaries.append(dict(kind="incomplete base or side" if i == outer else "interior gap",
+                                       span_mm=np.ptp(points, axis=0).tolist()))
+        hold.extraction["missing_boundaries"] = boundaries
     if len(triangles):
         hold.protected_triangles = trimesh.transform_points(triangles.reshape(-1, 3), frame).reshape(-1, 3, 3)
     if kind == "recess":
@@ -138,7 +152,21 @@ def protrusion_hold(revision, patch, reference, name="Hold", context=None, kind=
     else:
         hold.preparation = (f"Isolated the raised feature at its natural root ({reference.tolerance:.1f} mm above the fitted wall, "
                             "to exclude scan noise). Closed its underside with a flat back. No added backing or surrounding plate.")
-    hold.solid = build_solid(hold, ctx)
+    if not issue:
+        try:
+            hold.solid = build_solid(hold, ctx)
+        except GeometryError as error:
+            if not allow_incomplete:
+                raise
+            issue = str(error)
+    if issue:
+        hold.extraction.update(geometry_status="needs-repair", geometry_issue=issue)
+        hold.preparation = ("Feature recognized from the available scanned surface. Needs repair before mounting or STL export. "
+                            + issue + " Missing boundaries are highlighted; missing grip geometry has not been invented.")
+        details = hold.extraction.get("missing_boundaries", [])
+        if details:
+            hold.preparation += " Detected: " + "; ".join(b['kind'] + " (" +
+                " × ".join(f"{v:.1f}" for v in b['span_mm']) + " mm)" for b in details) + "."
     return hold
 
 
@@ -156,7 +184,7 @@ def feature_regions(revision, context=None, sensitivity=50.):
     return reference, regions
 
 
-def prepare_feature(revision, face_indices, name="Hold", context=None):
+def prepare_feature(revision, face_indices, name="Hold", context=None, allow_incomplete=False):
     """Use the painted region as a seed; trace the complete natural feature."""
     ctx = context or TaskContext()
     indices = np.unique(np.asarray(face_indices, dtype=int))
@@ -176,6 +204,6 @@ def prepare_feature(revision, face_indices, name="Hold", context=None):
                             "Turn off Isolate natural feature only if you want a backed surface-patch prototype.")
     # Do not silently switch to another, less-selected feature if this one fails.
     _, kind, patch = max(ranked, key=lambda value: value[0])
-    hold = protrusion_hold(revision, patch, reference, name, ctx, kind)
+    hold = protrusion_hold(revision, patch, reference, name, ctx, kind, allow_incomplete=allow_incomplete)
     hold.preparation += " The selection identified the feature; its outline follows the wall intersection."
     return hold

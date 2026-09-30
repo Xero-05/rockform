@@ -1,7 +1,7 @@
-ROCKFORM 0.1.4 - WINDOWS PROTOTYPE
+ROCKFORM 0.1.5 - WINDOWS PROTOTYPE
 
 START THE APP
-1. Download Rockform-0.1.4-Windows-x64.zip from the GitHub release.
+1. Download Rockform-0.1.5-Windows-x64.zip from the GitHub release.
 2. Use Extract All to unpack the entire ZIP.
 3. Open the extracted folder and double-click Rockform.exe.
 
@@ -24,15 +24,15 @@ Export STL for your slicer in millimeters. Save project to keep editable work.
 The Guide button explains the workflow. Right-drag paints with a selected brush;
 left-drag rotates the view and the mouse wheel zooms.
 
-NEW IN 0.1.4
-Deep recesses can become pocket suggestions with the support needed to preserve
-their cavity. The raised-feature backing-width limit no longer rejects pockets.
-Raised features still use 0 mm added backing and no surrounding plate.
-Save project now includes unfinished hold/repair previews, painted selections,
-pending settings, the selected hold and camera view. Reopen the .rockform file
-with Open project. Keep hold and Apply preview still require your acceptance.
-Older projects show their first kept hold. Unkept previews omitted by an older
-app cannot be recovered from that file. New saves use format 5 and need 0.1.4.
+NEW IN 0.1.5
+Incomplete scans can still contain recognizable features. Suggestions marked
+Needs repair show the available scanned surface and highlight missing boundaries
+in coral. Keep feature for repair saves it in your library and project.
+Repair the scan, then use Re-extract natural feature to review a new version.
+Mounting and STL export stay disabled until the feature forms a valid solid.
+Large or uneven missing areas may still require another scan.
+Projects keep previews, selections, settings and the saved view. New saves use
+format 6 and require Rockform 0.1.5 or later; older projects remain readable.
 
 The supplied Scaniverse scan now yields a roughly 135 x 94 x 38 mm natural feature.
 Both default mounting modes fit geometrically without adding backing. Match the

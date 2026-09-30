@@ -1,8 +1,14 @@
-# Rockform 0.1.4 validation
+# Rockform 0.1.5 validation
 
-**66 automated tests passed** in 249.26 seconds on the development Windows computer. VTK's existing NumPy deprecation warnings remain non-fatal.
+Version 0.1.5 adds incomplete-feature recognition without presenting an open scan surface as a printable solid. Tests cover complete features surrounded by scan damage, preservation of missing surface data, save/reopen of incomplete library items, mounting/export rejection, and explicit re-extraction from a repaired revision without changing the old feature.
 
-New regressions cover deep irregular recesses requiring wide support, preservation of the open cavity and source surface, save-dialog/reopen of unkept hold previews, unaccepted repair previews, painted regions, pending numeric edits, camera projection, active hold/tab, manual mount persistence and projects without saved view information. Saving does not accept a preview. Project format 5 adds workspace state while retaining readers for formats 1–4.
+The supplied `Rock_3DScanner.obj` contains 1,183,669 triangles and lacks unit metadata; the user confirmed millimeters. Default cleanup produces 1,185,011 triangles after fragment removal and small-gap repair. Detection identifies the central raised feature at approximately 65.3 × 68.9 × 27.8 mm, with about 15.6 mm measured broad relief. Its underside is incomplete. It is saved for repair with no solid or STL; the failed natural contact screen remains visible. Private review data lives under ignored `test-output/rock-015/`.
+
+**69 automated tests passed** in 278.69 seconds on the development Windows computer. VTK's existing NumPy deprecation warnings remain non-fatal.
+
+The focused incomplete-feature workflow tests were rerun after final preview/cutaway and export-button adjustments. A preview cannot export a previously selected library solid.
+
+Earlier regressions cover deep irregular recesses requiring wide support, preservation of the open cavity and source surface, save-dialog/reopen of unkept hold previews, unaccepted repair previews, painted regions, pending numeric edits, camera projection, active hold/tab, manual mount persistence and projects without saved view information. Saving does not accept a preview. Format 5 introduced workspace state; format 6 also supports incomplete library features. Readers retain support for formats 1–5.
 
 The second supplied Scaniverse OBJ (approximately 792 × 508 × 200 mm) now yields **six pocket holds**, with 3 mm beneath each cavity and gradual outer returns. Two regions are rejected for incomplete/tangled data. All six completed STL export/reimport and connected, watertight, orientation and intersection checks; the source hash is unchanged. The prepared editable project remains local under ignored `test-output/recess-014-*` directories. These are geometry checks, not climbing qualification.
 

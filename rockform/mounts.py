@@ -116,6 +116,8 @@ def mount_fit(hold, mount, geometry=None):
 
 
 def validate_mounts(hold):
+    if hold.solid is None:
+        raise GeometryError("This feature needs repair before mounting. Repair the scan and re-extract a closed hold.")
     geometry = footprint(hold)
     fits = [mount_fit(hold, m, geometry) for m in hold.mounts]
     for i, a in enumerate(hold.mounts):
@@ -129,6 +131,8 @@ def validate_mounts(hold):
 
 
 def generate_mounts(hold, bolt_profile, screw_profile, mode="bolt-on", count=2, anti_rotation=True, context=None):
+    if hold.solid is None:
+        raise GeometryError("This feature needs repair before mounting. Repair the scan and re-extract a closed hold.")
     ctx = context or TaskContext()
     if mode not in ("bolt-on", "screw-on") or not 1 <= count <= 10:
         raise GeometryError("Choose bolt-on or screw-on and a screw count from 1 to 10.")

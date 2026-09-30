@@ -271,6 +271,10 @@ def oriented_patch(hold):
 
 
 def build_solid(hold, context=None):
+    if hold.extraction.get("geometry_status") == "needs-repair":
+        raise GeometryError("This recognized feature needs scan repair before it can become a printable hold. "
+                            "Repair the source scan, then use Re-extract natural feature. "
+                            + hold.extraction.get("geometry_issue", ""))
     ctx = context or TaskContext()
     ctx.step(20, "Closing the hold against a flat back…")
     patch, _ = oriented_patch(hold)
