@@ -114,7 +114,7 @@ def _hold_read(archive, record):
 def save_project(project, path, context=None):
     ctx = context or TaskContext()
     destination = Path(path)
-    data = dict(version=7, source_name=project.source_name, scale_factor=project.scale_factor, source_units=project.source_units,
+    data = dict(version=8, source_name=project.source_name, scale_factor=project.scale_factor, source_units=project.source_units,
                 up=project.up.tolist(), cursor=project.cursor,
                 profiles={k: asdict(v) for k, v in project.profiles.items()}, revisions=[], archived=[], holds=[],
                 workspace=project.workspace)
@@ -127,8 +127,8 @@ def save_project(project, path, context=None):
             for kind, revision in all_revisions:
                 ctx.step(20, "Saving scan revisions…")
                 key = f"revisions/{revision.id}.npz"
-                _mesh_write(archive, key, revision.mesh, protected=revision.protected)
-                data[kind].append(dict(id=revision.id, label=revision.label, mesh=key))
+                _mesh_write(archive, key, revision.mesh, protected=revision.protected, crop_boundary=revision.crop_boundary)
+                data[kind].append(dict(id=revision.id, label=revision.label, mesh=key, processing=revision.processing))
             for hold in project.holds:
                 ctx.step(65, "Saving editable holds…")
                 data["holds"].append(_hold_write(archive, hold, f"holds/{hold.id}"))
@@ -136,9 +136,11 @@ def save_project(project, path, context=None):
                 data["pending_hold"] = _hold_write(archive, project.pending_hold, "workspace/hold")
             if project.pending_cleanup is not None:
                 preview = project.pending_cleanup
-                _mesh_write(archive, "workspace/cleanup.npz", preview.revision.mesh, protected=preview.revision.protected)
+                _mesh_write(archive, "workspace/cleanup.npz", preview.revision.mesh, protected=preview.revision.protected,
+                            crop_boundary=preview.revision.crop_boundary)
                 data["pending_cleanup"] = dict(id=preview.revision.id, label=preview.revision.label,
-                                               summary=preview.summary, warnings=preview.warnings)
+                                               summary=preview.summary, warnings=preview.warnings,
+                                               processing=preview.revision.processing)
                 for attribute in ("removed", "added"):
                     mesh = getattr(preview, attribute)
                     if mesh is not None:
@@ -160,14 +162,15 @@ def load_project(path, context=None):
         if sum(i.file_size for i in archive.infolist()) > 2_000_000_000:
             raise GeometryError("This project expands beyond the 2 GB project limit.")
         data = json.loads(archive.read("project.json"))
-        if data.get("version") not in (1, 2, 3, 4, 5, 6, 7):
+        if data.get("version") not in (1, 2, 3, 4, 5, 6, 7, 8):
             raise GeometryError("Unsupported project version.")
         original, _ = _mesh_read(archive, "original.npz")
         def revisions(kind):
             output = []
             for record in data.get(kind, []):
                 mesh, arrays = _mesh_read(archive, record["mesh"])
-                output.append(Revision(mesh, record["label"], record["id"], arrays["protected"]))
+                output.append(Revision(mesh, record["label"], record["id"], arrays["protected"],
+                                       arrays.get("crop_boundary", np.zeros(0, dtype=bool)), record.get("processing", {})))
             return output
         project = Project(original, data["source_name"], revisions("revisions"), data["cursor"],
                           profiles={k: HardwareProfile(**v) for k, v in data["profiles"].items()},
@@ -192,7 +195,8 @@ def load_project(path, context=None):
             extras = {name: _mesh_read(archive, f"workspace/{name}.npz")[0]
                       if f"workspace/{name}.npz" in archive.namelist() else None for name in ("removed", "added")}
             project.pending_cleanup = CleanupPreview(
-                Revision(mesh, record["label"], record["id"], arrays["protected"]),
+                Revision(mesh, record["label"], record["id"], arrays["protected"],
+                         arrays.get("crop_boundary", np.zeros(0, dtype=bool)), record.get("processing", {})),
                 extras["removed"], record["summary"], extras["added"], record["warnings"])
     ctx.step(100, "Project restored")
     return project

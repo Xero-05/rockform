@@ -1,7 +1,7 @@
-ROCKFORM 0.1.6 - WINDOWS PROTOTYPE
+ROCKFORM 0.1.7 - WINDOWS PROTOTYPE
 
 START THE APP
-1. Download Rockform-0.1.6-Windows-x64.zip from the GitHub release.
+1. Obtain Rockform-0.1.7-Windows-x64.zip.
 2. Use Extract All to unpack the entire ZIP.
 3. Open the extracted folder and double-click Rockform.exe.
 
@@ -15,7 +15,9 @@ Try a synthetic sample from the left-hand sidebar, or import an OBJ/STL scan.
 Check its dimensions. Scaniverse OBJ files that declare meters are converted
 automatically; still compare the dimensions with a measured reference.
 
-1 Repair: Preview repair & cleanup, inspect the changes, then Apply preview.
+1 Repair: Paint area of interest, Preview selected area, then Apply selected area.
+Keep surrounding wall (20 mm margin initially), or use the entire current scan.
+Next: Preview repair & cleanup, inspect the changes, then Apply preview.
 2 Holds: Suggest holds, choose a result, Preview hold, then Keep hold.
 3 Mounts: Try the included bolt or screw profile, generate mounts, and preview
 the cuts. Check the preset dimensions against your actual hardware before printing.
@@ -24,7 +26,15 @@ Export STL for your slicer in millimeters. Save project to keep editable work.
 The Guide button explains the workflow. Right-drag paints with a selected brush;
 left-drag rotates the view and the mouse wheel zooms.
 
-NEW IN 0.1.6
+NEW IN 0.1.7
+Import defaults to reducing dense, low-detail areas after scale confirmation.
+The original stays intact; Undo or Reset restores it. Uncheck the import option
+to retain every triangle. Import does not smooth or repair gaps.
+Paint an area of interest before repair to exclude unwanted broken scan edges.
+Preview first, then apply. Crop edges stay open. Undo restores excluded areas.
+Selections, unfinished crop previews and margins survive saving and reopening.
+
+QUICK REPAIR
 Select a raised feature marked Needs repair, then use 2 Holds > Quick repair.
 Fill down to wall adds material below the observed surface without a plate.
 Trim damaged base cuts off the lower damaged portion; adjust its height if needed.
@@ -34,7 +44,7 @@ Restore original feature remains available after saving and reopening.
 Both options must pass solid checks before mounting/export. Recesses still use
 scan gap repair to preserve their cavity. Missing front patches may need a rescan.
 Projects keep previews, selections, settings and the saved view. New saves use
-format 7 and require Rockform 0.1.6 or later; older projects remain readable.
+format 8 and require Rockform 0.1.7 or later; older projects remain readable.
 
 The supplied Scaniverse scan now yields a roughly 135 x 94 x 38 mm natural feature.
 Both default mounting modes fit geometrically without adding backing. Match the

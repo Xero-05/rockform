@@ -35,10 +35,14 @@ class Revision:
     label: str = "Original"
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     protected: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=bool))
+    crop_boundary: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=bool))
+    processing: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if len(self.protected) != len(self.mesh.vertices):
             self.protected = np.zeros(len(self.mesh.vertices), dtype=bool)
+        if len(self.crop_boundary) != len(self.mesh.vertices):
+            self.crop_boundary = np.zeros(len(self.mesh.vertices), dtype=bool)
 
 
 @dataclass

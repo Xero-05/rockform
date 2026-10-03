@@ -15,6 +15,7 @@ from scipy.spatial import cKDTree
 from .model import Project, Revision, GeometryError, Mount
 from .geometry import demo_scan, extract_hold, prepare_hold, build_solid, oriented_patch, frame_for_patch, generated_faces
 from .cleanup import CleanupOptions, clean_revision, gap_info
+from .preprocessing import adaptive_decimate, crop_interest
 from .detection import suggest_holds
 from .grip import assess_grip, review_text
 from .features import prepare_feature
@@ -41,10 +42,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.hold_preview = None
         self.selected = np.zeros(0, dtype=bool)
         self.cleanup_area = np.zeros(0, dtype=bool)
+        self.interest_area = np.zeros(0, dtype=bool)
         self.candidates = []
         self.hold_index = -1
         self.worker = None
         self.thread = None
+        self._after_job = None
         self.dirty = False
         self.updating = False
         self._brush_down = False
@@ -66,7 +69,7 @@ class MainWindow(QtWidgets.QMainWindow):
                        "prepare_boundary", "backing", "edge_flare", "hold_scale", "tilt_x", "tilt_y",
                        "mount_mode", "anti_rotation", "screw_count", "mount_x", "mount_y", "drag_mounts",
                        "cutaway", "cut_position", "brush_mode", "brush_radius", "compare",
-                       "quick_method", "auto_trim", "trim_height", "compare_repair")
+                       "quick_method", "auto_trim", "trim_height", "compare_repair", "interest_margin")
 
     def workspace_changed(self, *_):
         if self.project is not None and not self.worker:
@@ -81,6 +84,7 @@ class MainWindow(QtWidgets.QMainWindow):
                             widget.currentText() if isinstance(widget, QtWidgets.QComboBox) else widget.value())
         self.project.workspace = dict(revision_id=self.project.current.id,
             selection=np.flatnonzero(self.selected).tolist(), cleanup_area=np.flatnonzero(self.cleanup_area).tolist(),
+            interest_area=np.flatnonzero(self.interest_area).tolist(),
             hold_id=self.hold.id if self.hold else None, tab=self.tabs.currentIndex(),
             view=self.view_mode.currentText(), controls=values,
             camera=[list(point) for point in self.plotter.camera_position],
@@ -106,7 +110,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     item = self.gap_list.item(i)
                     if item.data(QtCore.Qt.UserRole) in state.get("checked_gaps", []):
                         item.setCheckState(QtCore.Qt.Checked)
-            for key, target in (("selection", self.selected), ("cleanup_area", self.cleanup_area)):
+            for key, target in (("selection", self.selected), ("cleanup_area", self.cleanup_area), ("interest_area", self.interest_area)):
                 ids = np.asarray(state.get(key, []), dtype=int)
                 if np.any((ids < 0) | (ids >= len(target))):
                     raise GeometryError("Saved selection does not match its scan revision.")
@@ -244,7 +248,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.compare.toggled.connect(lambda _: self.refresh())
         toolbar.addWidget(self.compare)
         viewing.addLayout(toolbar)
-        self.workflow_help = label("1 Import and check dimensions → 2 Preview repair, then Apply → 3 Suggest / select → Preview hold → Keep hold", "muted")
+        self.workflow_help = label("Import & reduce density → Select area → Preview / apply repair → Suggest / select hold → Keep hold", "muted")
         viewing.addWidget(self.workflow_help)
         self.plotter = QtInteractor(center, auto_update=False)
         self.plotter.set_background("#17272e", top="#253f45")
@@ -255,7 +259,7 @@ class MainWindow(QtWidgets.QMainWindow):
         viewing.addWidget(self.viewport_info)
         brushbar = QtWidgets.QHBoxLayout()
         self.brush_mode = QtWidgets.QComboBox()
-        self.brush_mode.addItems(["Navigate", "Select hold", "Erase hold", "Protect grip", "Unprotect", "Cleanup area", "Erase cleanup area"])
+        self.brush_mode.addItems(["Navigate", "Area of interest", "Erase interest area", "Select hold", "Erase hold", "Protect grip", "Unprotect", "Cleanup area", "Erase cleanup area"])
         brushbar.addWidget(self.brush_mode, 1)
         self.brush_radius = number(25, 1, 250, 1)
         brushbar.addWidget(label("Brush radius"))
@@ -302,7 +306,21 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _clean_tab(self):
         layout = self._scroll_tab("1 Repair")
-        layout.addWidget(label("Repair the scan first", "section"))
+        layout.addWidget(label("Choose the area to work on", "section"))
+        layout.addWidget(label("RIGHT-drag with Area of interest to paint the rock you want. Keep some surrounding wall for feature detection. Preview the crop before repair; coral areas will be excluded."))
+        self.interest_button = button("Paint area of interest", self.start_interest, True)
+        layout.addWidget(self.interest_button)
+        self.interest_margin = number(20, 0, 150)
+        self.interest_margin.valueChanged.connect(self.invalidate_interest_preview)
+        margin_form = QtWidgets.QFormLayout()
+        margin_form.addRow("Surrounding-wall margin", self.interest_margin)
+        layout.addLayout(margin_form)
+        self.crop_button = button("Preview selected area", self.preview_interest)
+        layout.addWidget(self.crop_button)
+        layout.addWidget(button("Clear area selection / use current scan", self.clear_interest))
+        self.interest_status = label("No area selected. You can also repair the entire current scan.")
+        layout.addWidget(self.interest_status)
+        layout.addWidget(label("Repair within the working area", "section"))
         layout.addWidget(label("Preview repair, inspect the highlighted changes, then Apply. Your original scan is always retained."))
         layout.addWidget(button("Preview repair & cleanup", self.preview_cleanup, True))
         self.preview_text = label("No pending cleanup")
@@ -329,6 +347,8 @@ class MainWindow(QtWidgets.QMainWindow):
         form.addRow("Reduce triangle count", self.reduction)
         layout.addLayout(form)
         layout.addWidget(label("Fragment size is a percentage of the largest connected surface area. Smoothing retains boundaries and marked sharp edges."))
+        layout.addWidget(button("Preview adaptive decimation", self.preview_decimation))
+        layout.addWidget(label("Automatic import decimation reduces dense, nearly flat areas with a 0.20 mm deviation limit. Sharp features and boundaries remain detailed. Undo or Reset scan restores the original; this button previews another pass."))
         layout.addWidget(label("Missing scan patches", "section"))
         self.auto_fill_gaps = QtWidgets.QCheckBox("Automatically repair small interior gaps")
         self.auto_fill_gaps.setChecked(True)
@@ -545,6 +565,9 @@ class MainWindow(QtWidgets.QMainWindow):
         for widget in (self.sidebar, self.tabs, self.top_controls):
             widget.setEnabled(True)
         self.refresh()
+        following, self._after_job = self._after_job, None
+        if following is not None:
+            following()
 
     def cancel_job(self):
         if self.worker:
@@ -561,13 +584,15 @@ class MainWindow(QtWidgets.QMainWindow):
     def show_guide(self):
         QtWidgets.QMessageBox.information(self, "Rockform quick start",
             "1. Import the OBJ/STL. Check the dimensions. Scaniverse's declared meter units are now detected automatically.\n\n"
-            "2. In 1 Repair, click Preview repair & cleanup. Inspect yellow filled gaps and coral removed fragments. Click Apply preview.\n\n"
-            "3. In 2 Holds, click Suggest holds and choose a result. Or select the Select hold brush below the viewer and RIGHT-drag over a small feature.\n\n"
-            "4. Click Preview hold from selection. Edge preparation can trim a troublesome border while preserving the remaining surface. Inspect the result, then click Keep hold.\n\n"
-            "5. Keep Isolate natural feature checked. Protrusions close at their root without an added plate; recesses receive material under the cavity. Green shows rock and amber shows added support. Re-extract natural feature creates a replacement preview while keeping the old design.\n\n"
+            "2. Import automatically reduces dense, low-detail areas after scale confirmation. Uncheck that option to keep every triangle. The original remains available with Undo, Reset scan and Compare original.\n\n"
+            "3. In 1 Repair, click Paint area of interest and RIGHT-drag over the useful rock. Set the surrounding-wall margin, Preview selected area, then Apply selected area. Excluded edges are not processed. You can also use the entire current scan.\n\n"
+            "4. Click Preview repair & cleanup. Inspect yellow filled gaps and coral removed fragments, then Apply preview. Crop edges stay open.\n\n"
+            "5. In 2 Holds, click Suggest holds and choose a result. Or select the Select hold brush below the viewer and RIGHT-drag over a small feature.\n\n"
+            "6. Click Preview hold from selection. Inspect the result, then click Keep hold.\n\n"
+            "Keep Isolate natural feature checked. Protrusions close at their root without an added plate; recesses receive material under the cavity. Green shows rock and amber shows added support. Re-extract natural feature creates a replacement preview while keeping the old design.\n\n"
             "For a raised feature marked Needs repair, use Quick repair: Fill down to wall or Trim damaged base. Preview, compare the original in coral, then Keep hold. Restore original feature remains available after save/reopen.\n\n"
-            "6. In 3 Mounts, the prototype bolt and screw profiles are ready to try. Their size requirements are shown below the profile buttons. Match actual hardware before printing. Generate mounts, preview the holes, and export STL.\n\n"
-            "7. Save project preserves kept holds, unfinished previews, painted selections and your view. Reopen the .rockform file with Open project to continue. Keep hold and Apply preview still require your acceptance.\n\n"
+            "7. In 3 Mounts, the prototype bolt and screw profiles are ready to try. Their size requirements are shown below the profile buttons. Match actual hardware before printing. Generate mounts, preview the holes, and export STL.\n\n"
+            "8. Save project preserves kept holds, unfinished previews, painted selections and your view. Reopen the .rockform file with Open project to continue. Keep hold and Apply preview still require your acceptance.\n\n"
             "Left-drag rotates; the wheel zooms. Face scan looks straight at the surface. A wall scan is allowed to have an open outer edge; only the extracted hold must be closed.")
 
     def face_scan(self):
@@ -616,12 +641,14 @@ class MainWindow(QtWidgets.QMainWindow):
     def reset_selection(self):
         self.selected = np.zeros(len(self.project.current.mesh.faces), dtype=bool)
         self.cleanup_area = np.zeros(len(self.project.current.mesh.vertices), dtype=bool)
+        self.interest_area = np.zeros(len(self.project.current.mesh.faces), dtype=bool)
         self.gap_list.clear()
         self.candidate_list.clear()
         self.candidates = []
         self.preview = None
         self.hold_preview = None
         self.hold_preview_text.setText("Preview a shape, then Keep hold to add it to your library.")
+        self.preview_text.setText("No pending scan preview")
 
     def open_demo(self):
         if self.worker or not self.confirm_replace():
@@ -659,6 +686,11 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(label("Use a distance measured in the scanner and the same physical reference. Check the resulting dimensions below."))
         dims = label("")
         layout.addWidget(dims)
+        auto_decimate = QtWidgets.QCheckBox("Automatically reduce dense, low-detail areas")
+        auto_decimate.setObjectName("auto_decimate_import")
+        auto_decimate.setChecked(True)
+        layout.addWidget(auto_decimate)
+        layout.addWidget(label("After scale confirmation: preserve the original and simplify a working copy. Features and boundaries are retained, with a 0.20 mm surface-deviation limit. No smoothing or repair runs until you choose your area."))
         def factor():
             return [1, 1000, 10, 25.4][units.currentIndex()] if units.currentIndex() < 4 else measured.value() / file_distance.value()
         def update():
@@ -678,6 +710,28 @@ class MainWindow(QtWidgets.QMainWindow):
             project.revisions[0].mesh.vertices *= ratio
             project.scale_factor = multiplier
             self.set_project(project)
+            self.start_interest()
+            if auto_decimate.isChecked():
+                def start():
+                    self.preprocess_import(project)
+                # Scale confirmation may itself be the previous worker's callback.
+                if self.worker:
+                    self._after_job = start
+                else:
+                    start()
+
+    def preprocess_import(self, project):
+        def ready(preview):
+            if preview.revision.processing.get("reduction_applied"):
+                project.commit(preview.revision)
+                self.reset_selection()
+            self.preview_text.setText(preview.summary)
+            self.dirty = True
+            self.start_interest()
+            self.refresh(reset_camera=True)
+            self.activity.setText("Import ready. Paint your area of interest, preview it, then apply before repair.")
+        self.run_job("Automatically reducing dense, low-detail scan areas…",
+                     lambda ctx: adaptive_decimate(project.current, context=ctx), ready)
 
     def open_dialog(self):
         if self.worker or not self.confirm_replace():
@@ -735,10 +789,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.gaps = gap_info(self.project.current.mesh)
             self.gap_list.clear()
             for gap in self.gaps:
-                suffix = "outer boundary" if gap["outer"] else "interior gap"
+                cropped = self.project.current.crop_boundary[gap["vertices"]].any()
+                suffix = "area-of-interest edge (kept open)" if cropped else "outer boundary" if gap["outer"] else "interior gap"
                 item = QtWidgets.QListWidgetItem(f"{gap['diameter']:.1f} mm · {suffix}")
                 item.setData(QtCore.Qt.UserRole, gap["id"])
-                if not gap["outer"]:
+                if not gap["outer"] and not cropped:
                     item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
                     item.setCheckState(QtCore.Qt.Unchecked)
                 self.gap_list.addItem(item)
@@ -749,8 +804,60 @@ class MainWindow(QtWidgets.QMainWindow):
         except GeometryError as error:
             self.show_error(str(error))
 
+    def start_interest(self):
+        if self.project:
+            self.tabs.setCurrentIndex(0)
+            self.show_scan()
+            self.brush_mode.setCurrentText("Area of interest")
+            self.activity.setText("RIGHT-drag to paint an area of interest, then Preview selected area. Include surrounding wall.")
+
+    def clear_interest(self):
+        if self.project and not self.worker:
+            self.interest_area[:] = False
+            if self.preview and self.preview.revision.processing.get("operation") == "area-of-interest":
+                self.preview = None
+                self.preview_text.setText("Area preview discarded. The current scan is unchanged.")
+            self.brush_mode.setCurrentText("Navigate")
+            self.dirty = True
+            self.show_scan()
+            self.refresh()
+
+    def invalidate_interest_preview(self, *_):
+        if self.preview and self.preview.revision.processing.get("operation") == "area-of-interest" and not self.worker:
+            self.preview = None
+            self.preview_text.setText("Area settings changed. Preview again before applying.")
+            self.show_scan()
+            self.refresh()
+
+    def _scan_preview_ready(self, preview):
+        self.preview = preview
+        self.dirty = True
+        self.preview_text.setText(preview.summary + ("\n" + "\n".join(preview.warnings) if preview.warnings else ""))
+        self.view_mode.setCurrentText("Cleanup preview")
+        self.refresh()
+
+    def preview_interest(self):
+        if not self.project or self.worker:
+            return
+        selected = self.interest_area.copy()
+        margin = self.interest_margin.value()
+        self.run_job("Preparing selected area…", lambda ctx: crop_interest(self.project.current, selected, margin, ctx),
+                     self._scan_preview_ready)
+
+    def preview_decimation(self):
+        if not self.project or self.worker:
+            return
+        if self.interest_area.any():
+            self.show_error("Preview and apply the selected area first, or clear the area selection to use the current scan.")
+            return
+        self.run_job("Preparing adaptive decimation…", lambda ctx: adaptive_decimate(self.project.current, context=ctx),
+                     self._scan_preview_ready)
+
     def preview_cleanup(self):
         if not self.project:
+            return
+        if self.interest_area.any() or (self.preview and self.preview.revision.processing.get("operation") == "area-of-interest"):
+            self.show_error("Preview and apply the selected area before repair, or clear the area selection to repair the current scan.")
             return
         ids = [self.gap_list.item(i).data(QtCore.Qt.UserRole) for i in range(self.gap_list.count())
                if self.gap_list.item(i).checkState() == QtCore.Qt.Checked]
@@ -760,24 +867,22 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         options = CleanupOptions(self.repair_check.isChecked(), self.fragment.value(), self.smoothing.value(),
                                  self.reduction.value() / 100, ids, self.gap_limit.value(), self.auto_fill_gaps.isChecked())
-        def ready(preview):
-            self.preview = preview
-            self.dirty = True
-            self.preview_text.setText(preview.summary + ("\n" + "\n".join(preview.warnings) if preview.warnings else ""))
-            self.view_mode.setCurrentText("Cleanup preview")
-            self.refresh()
-        self.run_job("Preparing cleanup preview…", lambda ctx: clean_revision(self.project.current, options, selected, ctx), ready)
+        self.run_job("Preparing cleanup preview…", lambda ctx: clean_revision(self.project.current, options, selected, ctx), self._scan_preview_ready)
 
     def accept_cleanup(self):
         if self.project and self.preview:
+            operation = self.preview.revision.processing.get("operation", "cleanup")
             self.project.commit(self.preview.revision)
             self.reset_selection()
-            self.preview_text.setText("Cleanup applied. Existing holds retain their original revision.")
+            self.preview_text.setText("Selected area applied. Preview repair on this area next." if operation == "area-of-interest" else
+                                      "Scan edit applied. Existing holds retain their original revision.")
             self.hold_preview = None
             self.dirty = True
             self.show_scan()
             self.refresh()
-            self.activity.setText("Repair applied. Next: open 2 Holds, choose Suggest holds or paint a small feature.")
+            self.brush_mode.setCurrentText("Navigate")
+            self.activity.setText("Area applied. Excluded geometry will not be repaired. Next: Preview repair & cleanup." if operation == "area-of-interest" else
+                                  "Scan edit applied. Next: open 2 Holds, choose Suggest holds or paint a small feature.")
 
     def discard_cleanup(self):
         self.preview = None
@@ -790,6 +895,10 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.project and not self.worker:
             self.selected[:] = False
             self.cleanup_area[:] = False
+            self.interest_area[:] = False
+            if self.preview and self.preview.revision.processing.get("operation") == "area-of-interest":
+                self.preview = None
+                self.preview_text.setText("Area preview discarded.")
             self.hold_preview = None
             self.hold_preview_text.setText("Selection cleared. Choose a suggestion or paint a new feature.")
             self.dirty = True
@@ -822,7 +931,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._brush_snapshot = None
         if self.brush_mode.currentText() in ("Protect grip", "Unprotect"):
             current = self.project.current
-            self._brush_snapshot = Revision(current.mesh.copy(), "Grip protection", protected=current.protected.copy())
+            self._brush_snapshot = Revision(current.mesh.copy(), "Grip protection", protected=current.protected.copy(),
+                                            crop_boundary=current.crop_boundary.copy(), processing=deepcopy(current.processing))
         obj.GetInteractorStyle().SetEnabled(0)
         self._paint(obj)
 
@@ -864,8 +974,23 @@ class MainWindow(QtWidgets.QMainWindow):
         mesh = self.project.current.mesh
         mode = self.brush_mode.currentText()
         radius = self.brush_radius.value()
-        if mode in ("Select hold", "Erase hold"):
+        if mode in ("Area of interest", "Erase interest area"):
             ids = cKDTree(mesh.triangles_center).query_ball_point(point, radius)
+            # A simplified flat triangle can be wider than the brush. Always
+            # include the face actually hit, even if its center is farther away.
+            if 0 <= picker.GetCellId() < len(mesh.faces):
+                ids.append(picker.GetCellId())
+            self.interest_area[ids] = mode == "Area of interest"
+            if self.preview and self.preview.revision.processing.get("operation") == "area-of-interest":
+                self.preview = None
+                self.accept_button.setEnabled(False)
+                self.reject_button.setEnabled(False)
+                self.preview_text.setText("Area changed. Preview the new area before applying.")
+            self.interest_status.setText(f"{self.interest_area.sum():,} triangles painted. Preview and apply this area before repair.")
+        elif mode in ("Select hold", "Erase hold"):
+            ids = cKDTree(mesh.triangles_center).query_ball_point(point, radius)
+            if 0 <= picker.GetCellId() < len(mesh.faces):
+                ids.append(picker.GetCellId())
             self.selected[ids] = mode == "Select hold"
             self.hold_preview = None
             self.keep_hold_button.setEnabled(False)
@@ -883,6 +1008,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _scan_colors(self):
         mesh = self.project.current.mesh
         colors = np.tile([128, 162, 159], (len(mesh.faces), 1)).astype(np.uint8)
+        if len(self.interest_area) == len(mesh.faces):
+            colors[self.interest_area] = [197, 157, 236]
         if len(self.cleanup_area) == len(mesh.vertices):
             colors[self.cleanup_area[mesh.faces].any(axis=1)] = [104, 159, 224]
         protection = self._brush_snapshot.protected if self._brush_snapshot else self.project.current.protected
@@ -893,9 +1020,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _update_scan_colors(self):
         if getattr(self, "scan_poly", None) is not None:
+            self.crop_button.setEnabled(bool(self.interest_area.any()))
             self.scan_poly.cell_data["region"] = self._scan_colors()
             self.plotter.render()
-            self.selection_info.setText(f"{self.selected.sum():,} triangles selected · Teal: protected · Amber: hold · Blue: cleanup")
+            self.selection_info.setText(f"{self.interest_area.sum():,} area / {self.selected.sum():,} hold triangles · Violet: area · Teal: protected · Amber: hold · Blue: cleanup")
 
     def set_up_axis(self, index):
         if self.project and not self.worker:
@@ -910,6 +1038,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def suggest(self):
         if not self.project:
+            return
+        if self.interest_area.any():
+            self.show_error("Preview and apply your area of interest before suggesting holds, or clear the area selection to use the current scan.")
             return
         if self.preview:
             self.show_error("Apply or discard the repair preview first, then suggest holds on the working scan.")
@@ -1350,7 +1481,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.export_button.setEnabled(printable)
         self.tabs.setTabEnabled(2, bool(printable))
         self.accept_button.setEnabled(self.preview is not None)
+        is_crop = bool(self.preview and self.preview.revision.processing.get("operation") == "area-of-interest")
+        self.accept_button.setText("Apply selected area" if is_crop else "Apply preview")
         self.reject_button.setEnabled(self.preview is not None)
+        self.crop_button.setEnabled(self.project is not None and bool(self.interest_area.any()))
+        if self.project:
+            self.interest_status.setText(f"{self.interest_area.sum():,} triangles painted. Preview and apply this area before repair." if self.interest_area.any() else
+                "Area of interest active. Repair and detection use only this working area; Undo restores the previous scan." if self.project.current.processing.get("area_of_interest") else
+                "No area selected. You can also repair the entire current scan.")
         self.keep_hold_button.setEnabled(self.hold_preview is not None)
         self.keep_hold_button.setText("Keep feature for repair" if self.hold_preview is not None and self.hold_preview.solid is None else "Keep hold")
         self.discard_hold_button.setEnabled(self.hold_preview is not None)
@@ -1397,7 +1535,7 @@ class MainWindow(QtWidgets.QMainWindow):
                         points = mesh.vertices[gap["vertices"]]
                         self.plotter.add_lines(np.vstack([points, points[0]]), connected=True, color="#f58b6e", width=5)
                     self.plotter.add_text(f"{mode.upper()}  /  mm", position="upper_left", font_size=11, color="#b7cec7")
-                self.selection_info.setText(f"{self.selected.sum():,} triangles selected · Teal: protected · Amber: hold · Blue: cleanup")
+                self.selection_info.setText(f"{self.interest_area.sum():,} area / {self.selected.sum():,} hold triangles · Violet: area · Teal: protected · Amber: hold · Blue: cleanup")
             if reset_camera:
                 self.plotter.view_isometric()
                 self.plotter.reset_camera()

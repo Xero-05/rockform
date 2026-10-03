@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from copy import deepcopy
 import numpy as np
 import trimesh
 import pyvista as pv
@@ -101,7 +102,7 @@ def gap_info(mesh):
     return info
 
 
-def _fill_selected_gaps(mesh, options, allowed, protected, selected_centers=()):
+def _fill_selected_gaps(mesh, options, allowed, protected, selected_centers=(), crop_boundary=None):
     new_faces = []
     warnings = []
     filled = 0
@@ -110,6 +111,9 @@ def _fill_selected_gaps(mesh, options, allowed, protected, selected_centers=()):
         if not chosen and not (options.auto_fill_small_gaps and not gap["outer"] and gap["diameter"] <= options.max_gap_diameter):
             continue
         loop = gap["vertices"]
+        if crop_boundary is not None and crop_boundary[loop].any():
+            warnings.append("An area-of-interest cut edge was left open; it is not missing scan data.")
+            continue
         if gap["outer"]:
             warnings.append("The outer scan boundary was left open. Only small interior gaps can be repaired.")
             continue
@@ -234,9 +238,14 @@ def clean_revision(revision, options, selected_vertices=None, context=None):
     allowed &= ~protection
     # Fill last so the yellow preview uses the final surface positions, even
     # when smoothing or simplification is part of the same cleanup operation.
-    added, filled, warnings = _fill_selected_gaps(mesh, options, allowed, protection, selected_centers)
+    crop_boundary = revision.crop_boundary[nearest].copy()
+    if revision.crop_boundary.any():
+        distance, _ = cKDTree(source.vertices[revision.crop_boundary]).query(mesh.vertices)
+        crop_boundary |= distance < 1e-8
+    added, filled, warnings = _fill_selected_gaps(mesh, options, allowed, protection, selected_centers, crop_boundary)
     trimesh.repair.fix_normals(mesh, multibody=True)
-    revision_out = Revision(mesh, "Cleaned scan", protected=protection)
+    revision_out = Revision(mesh, "Cleaned scan", protected=protection, crop_boundary=crop_boundary,
+                            processing={**deepcopy(revision.processing), "operation": "cleanup"})
     ctx.step(100, "Cleanup preview ready")
     gaps = gap_info(mesh)
     large = sum(not g["outer"] and g["diameter"] > options.max_gap_diameter for g in gaps)

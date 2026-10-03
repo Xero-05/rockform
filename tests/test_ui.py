@@ -160,6 +160,7 @@ def test_detected_units_dialog_does_not_double_scale(tmp_path):
     QtCore.QTimer.singleShot(10, confirm)
     try:
         window.confirm_scale(project)
+        wait_for_worker(window)
         assert np.allclose(window.project.original.extents, mesh.extents * 1000)
         assert window.project.scale_factor == 1000
     finally:
