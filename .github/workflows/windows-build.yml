@@ -26,7 +26,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pip install --no-deps -e .
       - name: Test geometry, repairs, saving, and export
-        run: python -m pytest tests/test_pipeline.py tests/test_scan_repair.py -q
+        run: python -m pytest tests/test_pipeline.py tests/test_scan_repair.py tests/test_preprocessing.py -q
       - name: Build the standalone Windows application
         run: python -m PyInstaller --noconfirm Rockform.spec
       - name: Include the team instructions

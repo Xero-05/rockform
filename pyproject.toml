@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rockform"
-version = "0.1.6"
+version = "0.1.7"
 description = "Local scan-to-print climbing hold shape prototyping"
 requires-python = ">=3.11,<3.14"
 dependencies = [

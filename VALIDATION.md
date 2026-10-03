@@ -1,4 +1,20 @@
-# Rockform 0.1.6 validation
+# Rockform 0.1.7 validation
+
+Import now defaults to adaptive decimation after unit confirmation. The full-resolution original is retained. Dense, locally low-detail regions are simplified with fixed feature/patch boundaries, a VTK error limit and bidirectional sampled surface checks against 0.20 mm. Reduction retries at lower strengths before giving up. Coarse scans and complex regions can remain unchanged. This is sampled verification, not a claim of scan accuracy or an exact Hausdorff bound.
+
+Area-of-interest painting and an adjustable surrounding-wall margin create an explicit crop preview before repair. Applying it commits a new revision. Excluded geometry is absent from later repair and detection. New cut boundaries are persisted and cannot be mistaken for repairable interior gaps. The original, selection, unfinished crop preview, margin and exclusions survive save/reopen. Undo/redo and reset preserve existing holds and their source revisions. Format 8 stores this state; formats 1–7 remain readable.
+
+**85 tests passed** in 252.94 seconds. After the final brush adjustment, all **six focused native UI tests passed** in 18.42 seconds. New tests cover dense wall reduction, raised/recessed detail, protected triangles, open-hole topology, surface deviation, coarse scans, cancellation, original preservation, intentionally excluded interior regions, scoped repair, revision history, old-format loading, default import/opt-out, actual brush input, save/reopen of a crop draft, and margin invalidation. Existing VTK/NumPy warnings remain non-fatal.
+
+Source-runtime checks on all three supplied scans passed preprocessing, crop preview persistence, area repair, feature recognition, and native rendering. The source file hashes remained unchanged:
+
+- `Rock_3DScanner.obj`: **1,183,669 → 536,493 triangles**, maximum sampled deviation **0.034 mm**. The test area retained 340,121 triangles before repair. The central incomplete raised feature remains recognized, without silently inventing its missing underside.
+- First Scaniverse scan: **64,253 → 63,065 triangles**, sampled deviation **0.178 mm**. A separate full-scan check confirmed its complete raised feature remains extractable. The deliberately smaller central crop cuts its root and correctly reports an incomplete feature; users must include surrounding wall or enlarge the margin.
+- Second Scaniverse scan: **61,851 → 61,839 triangles**, sampled deviation **0.126 mm**. Most triangles are not dense low-detail candidates and are left alone. Four complete pocket holds within the cropped test area exported and passed STL reimport validation; five cut/incomplete regions remain marked for repair.
+
+`Rockform.exe --verify-preprocessing <scan.obj> <output-folder>` exercises decimation, a central-area crop, repair, recognition, valid-solid exports, saved crop boundaries and the native UI in the packaged runtime. It writes `preprocessing-verification.json`. Local acceptance artifacts are under ignored `test-output/preprocessing017-*`; scan data is not packaged.
+
+## Previous 0.1.6 validation
 
 Quick repair offers explicit downward fill and base trimming for incomplete raised features. It preserves the original feature inside the new design and in saved previews. Both methods require a connected, watertight, consistently oriented solid without detected intersections. Filling resolves overlapping projected rim segments; only numerical union seams and sub-0.01 mm³ slivers are removed. The fill's reported numerical surface tolerance is 0.001 mm. Trimming refuses protected regions, cuts still crossing missing data, and less than 3 mm remaining feature height.
 

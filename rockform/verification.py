@@ -14,6 +14,62 @@ from .mounts import generate_mounts, apply_mounts
 from .storage import save_project, load_project, export_hold
 
 
+def run_preprocessing(source, destination):
+    """Check import decimation, a central area crop, repair, persistence and UI."""
+    from hashlib import sha256
+    from .storage import import_scan
+    from .preprocessing import adaptive_decimate, crop_interest
+    from .geometry import frame_for_patch, validate_solid
+    from .detection import suggest_holds
+    output = Path(destination)
+    output.mkdir(parents=True, exist_ok=True)
+    report = dict(frozen=bool(getattr(sys, 'frozen', False)), source=Path(source).name, passed=False)
+    try:
+        before = sha256(Path(source).read_bytes()).hexdigest()
+        project = import_scan(source)
+        density = adaptive_decimate(project.current)
+        report['decimation'] = density.revision.processing
+        if density.revision.processing.get('reduction_applied'):
+            project.commit(density.revision)
+        mesh = project.current.mesh
+        local = trimesh.transform_points(mesh.triangles_center, frame_for_patch(mesh))
+        center = (local.min(axis=0) + local.max(axis=0)) / 2
+        selected = (np.abs(local[:, :2] - center[:2]) < np.ptp(local[:, :2], axis=0) * .3).all(axis=1)
+        crop = crop_interest(project.current, selected, 20.)
+        project.pending_cleanup = crop
+        save_project(project, output / 'Pending area.rockform')
+        restored = load_project(output / 'Pending area.rockform')
+        assert np.array_equal(restored.pending_cleanup.revision.crop_boundary, crop.revision.crop_boundary)
+        project.pending_cleanup = None
+        project.commit(crop.revision)
+        report['crop'] = dict(triangles=len(crop.revision.mesh.faces), summary=crop.summary)
+        cleanup = clean_revision(project.current, CleanupOptions(auto_fill_small_gaps=True))
+        project.commit(cleanup.revision)
+        report['cleanup'] = cleanup.summary
+        candidates, _ = suggest_holds(project.current, project.up)
+        report['candidates'] = []
+        for i, candidate in enumerate(candidates):
+            hold = candidate.prepared_hold
+            project.holds.append(hold)
+            report['candidates'].append(candidate.explanation)
+            if hold.solid is not None:
+                _, path, _ = export_hold(hold, output / f'Area hold {i+1}.stl')
+                validate_solid(trimesh.load_mesh(path))
+        path = output / 'Preprocessed area.rockform'
+        save_project(project, path)
+        reopened = load_project(path)
+        assert np.array_equal(reopened.original.vertices, project.original.vertices)
+        assert np.array_equal(reopened.current.crop_boundary, project.current.crop_boundary)
+        check_native_view(output, reopened, tab=0)
+        report['source_unchanged'] = sha256(Path(source).read_bytes()).hexdigest() == before
+        assert report['source_unchanged']
+        report['passed'] = True
+    except Exception:
+        report['error'] = traceback.format_exc()
+    (output / 'preprocessing-verification.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
+    return 0 if report['passed'] else 1
+
+
 def run_scan(source, destination):
     """Check the same default repair/suggestion path on a supplied local scan.
 
