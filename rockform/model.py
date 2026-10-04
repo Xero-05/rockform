@@ -130,6 +130,7 @@ class Hold:
     feature_kind: str = "manual"
     extraction: dict = field(default_factory=dict)
     repair_source: Hold | None = None
+    repair_body: trimesh.Trimesh | None = None
 
 
 @dataclass

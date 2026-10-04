@@ -402,14 +402,14 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(button("Preview hold from selection", self.create_hold, True))
         layout.addWidget(label("Quick repair", "section"))
         self.quick_method = QtWidgets.QComboBox()
-        self.quick_method.addItems(["Fill down to wall", "Trim damaged base", "Trim then fill"])
-        self.quick_method.setToolTip("For incomplete raised features. Trim then fill removes the base below your chosen height, then fills the remaining open edges. Inspect amber support and compare with the original.")
+        self.quick_method.addItems(["Fill down to wall", "Trim damaged base", "Fill then trim"])
+        self.quick_method.setToolTip("For incomplete raised features. Fill then trim fills the original feature first, then cuts the completed solid at your chosen height. Inspect amber support and compare with the original.")
         layout.addWidget(self.quick_method)
         self.auto_trim = QtWidgets.QCheckBox("Find trim height automatically")
         self.auto_trim.setChecked(True)
         layout.addWidget(self.auto_trim)
         self.trim_height = number(0, 0, 1000)
-        self.trim_height.setToolTip("Cut height above the fitted wall, in original scan millimeters. Trim then fill uses your chosen height; Trim damaged base also offers automatic height.")
+        self.trim_height.setToolTip("Cut height above the fitted wall, in original scan millimeters. Fill then trim uses your chosen height as the flat back; Trim damaged base also offers automatic height.")
         trim_form = QtWidgets.QFormLayout()
         self.trim_label = QtWidgets.QLabel("Trim height above wall")
         trim_form.addRow(self.trim_label, self.trim_height)
@@ -423,7 +423,7 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.compare_repair)
         self.quick_method.currentIndexChanged.connect(self.repair_method_changed)
         self.auto_trim.toggled.connect(self.update_quick_controls)
-        layout.addWidget(label("Trim then fill: choose a cut height, preview, then Keep hold. The original stays saved for comparison. Fill can cover undercuts; trim makes the feature shallower. Raised features only."))
+        layout.addWidget(label("Fill then trim: fill the original first, then cut the solid at your chosen height. Preview, compare, then Keep hold. Fill can cover undercuts; the original stays saved. Raised features only."))
         self.hold_preview_text = label("Preview a shape, then Keep hold to add it to your library.")
         layout.addWidget(self.hold_preview_text)
         preview_row = QtWidgets.QHBoxLayout()
@@ -599,7 +599,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "5. In 2 Holds, click Suggest holds and choose a result. Or select the Select hold brush below the viewer and RIGHT-drag over a small feature.\n\n"
             "6. Click Preview hold from selection. Inspect the result, then click Keep hold.\n\n"
             "Keep Isolate natural feature checked. Protrusions close at their root without an added plate; recesses receive material under the cavity. Green shows rock and amber shows added support. Re-extract natural feature creates a replacement preview while keeping the old design.\n\n"
-            "For a raised feature marked Needs repair, use Quick repair. Trim then fill removes rock below your chosen height and fills the remaining open edges to a flat back 3 mm below the cut. Fill down to wall and Trim damaged base remain available. Preview, compare the original in coral, then Keep hold. Restore original feature remains available after save/reopen.\n\n"
+            "For a raised feature marked Needs repair, use Quick repair. Fill then trim fills the original feature first, then cuts the solid at your chosen height to form a flat back. Fill down to wall and Trim damaged base remain available. Preview, compare the original in coral, then Keep hold. Restore original feature remains available after save/reopen.\n\n"
             "7. In 3 Mounts, the prototype bolt and screw profiles are ready to try. Their size requirements are shown below the profile buttons. Match actual hardware before printing. Generate mounts, preview the holes, and export STL.\n\n"
             "8. Save project preserves kept holds, unfinished previews, painted selections and your view. Reopen the .rockform file with Open project to continue. Keep hold and Apply preview still require your acceptance.\n\n"
             "Left-drag rotates; the wheel zooms. Face scan looks straight at the surface. A wall scan is allowed to have an open outer edge; only the extracted hold must be closed.")
@@ -1186,9 +1186,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tilt_y.setValue(hold.tilt_y)
         if hold.feature_kind == "protrusion" and (hold.solid is None or hold.repair_source is not None):
             repair = hold.extraction.get("quick_repair", {})
-            if repair.get('method') in ('fill', 'trim', 'trim-fill'):
+            if repair.get('method') in ('fill', 'trim', 'trim-fill', 'fill-trim'):
                 blocker = QtCore.QSignalBlocker(self.quick_method)
-                self.quick_method.setCurrentIndex(('fill', 'trim', 'trim-fill').index(repair['method']))
+                self.quick_method.setCurrentIndex(2 if repair['method'] in ('trim-fill', 'fill-trim') else ('fill', 'trim').index(repair['method']))
                 del blocker
             try:
                 self.trim_height.setValue(repair['trim_height_above_wall_mm'] if 'trim_height_above_wall_mm' in repair else
@@ -1234,14 +1234,14 @@ class MainWindow(QtWidgets.QMainWindow):
         if target is None or self.worker:
             return
         source = deepcopy(target)
-        method = ('fill', 'trim', 'trim-fill')[self.quick_method.currentIndex()]
+        method = ('fill', 'trim', 'fill-trim')[self.quick_method.currentIndex()]
         height = None if method == 'trim' and self.auto_trim.isChecked() else self.trim_height.value()
         up = self.project.up.copy()
         def ready(hold):
             self.hold_preview = hold
             self.dirty = True
             self.shape_fields(hold)
-            if method in ("trim", "trim-fill"):
+            if method in ("trim", "fill-trim"):
                 self.trim_height.setValue(hold.extraction["quick_repair"]["trim_height_above_wall_mm"])
             self.hold_preview_text.setText(hold.preparation + "\n" + review_text(hold))
             self.view_mode.setCurrentText("Hold preview")

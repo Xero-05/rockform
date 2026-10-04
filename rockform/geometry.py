@@ -283,8 +283,8 @@ def build_solid(hold, context=None):
     ctx.step(20, "Closing the hold against a flat back…")
     patch, _ = oriented_patch(hold)
     if hold.edge_style == "projected-base":
-        from .quick_repair import project_to_back
-        solid = project_to_back(patch, ctx)
+        from .quick_repair import project_to_back, rebuild_filled_body
+        solid = rebuild_filled_body(hold, patch, ctx) if hold.repair_body is not None else project_to_back(patch, ctx)
         validate_solid(solid, ctx)
         return solid
     loops = boundary_loops(patch)

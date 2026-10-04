@@ -6,7 +6,7 @@ from PySide6 import QtWidgets
 from rockform.model import Project, Revision, Hold, GeometryError, TaskContext, Cancelled, default_profiles
 from rockform.features import feature_regions, protrusion_hold
 from rockform.geometry import build_solid, generated_faces
-from rockform.quick_repair import quick_repair, original_feature, suggested_trim_height, comparison_surface
+from rockform.quick_repair import quick_repair, original_feature, suggested_trim_height, comparison_surface, _connected_fill, _trim_solid
 from rockform.storage import save_project, load_project, export_hold
 from rockform.mounts import generate_mounts, apply_mounts, footprint
 from rockform.app import MainWindow
@@ -63,26 +63,33 @@ def test_combined_repair_closes_damage_above_cut_and_round_trips(tmp_path):
     # This cut removes the lowest extensions but leaves higher damaged sides.
     with pytest.raises(GeometryError, match='cut has not cleared'):
         quick_repair(source, 'trim', trim_height=5.)
-    repaired = quick_repair(source, 'trim-fill', trim_height=5.)
+    repaired = quick_repair(source, 'fill-trim', trim_height=5.)
     assert repaired.solid.is_volume and generated_faces(repaired).any()
     assert repaired.patch.area < source.patch.area
-    assert repaired.patch.vertices[:, 2].min() == pytest.approx(3.)
-    assert repaired.solid.extents[2] == pytest.approx(29.)  # 30 - (5 - wall offset 1) + backing 3
-    assert repaired.extraction['quick_repair']['backing_below_trim_mm'] == 3.
+    assert repaired.patch.vertices[:, 2].min() == pytest.approx(0.)
+    assert repaired.solid.extents[2] == pytest.approx(26.)  # 30 - (5 - wall offset 1)
+    assert repaired.extraction['quick_repair']['sequence'] == 'fill-then-trim'
+    assert repaired.extraction['quick_repair']['flat_back_above_wall_mm'] == 5.
+    filled = quick_repair(source, 'fill')
+    cut = _trim_solid(filled.solid, 5.)
+    cut.vertices[:, 2] -= 5.
+    assert cut.volume == pytest.approx(repaired.solid.volume)
+    assert np.allclose(cut.bounds, repaired.solid.bounds)
     world = trimesh.transform_points(repaired.patch.vertices, np.linalg.inv(repaired.frame))
     assert world[:, 2].min() == pytest.approx(4.)
     assert trimesh.proximity.closest_point(source.patch, world)[1].max() < 1e-6
     assert np.array_equal(original, source.patch.vertices) and source.solid is None
     assert comparison_surface(repaired).bounds[0, 2] < repaired.patch.bounds[0, 2]
     # Lowering the cut starts from the original, restoring previously removed rock.
-    lower = quick_repair(repaired, 'trim-fill', trim_height=3.)
-    direct = quick_repair(source, 'trim-fill', trim_height=3.)
+    lower = quick_repair(repaired, 'fill-trim', trim_height=3.)
+    direct = quick_repair(source, 'fill-trim', trim_height=3.)
     assert lower.patch.area > repaired.patch.area
     assert np.allclose(lower.patch.vertices, direct.patch.vertices)
     project.holds.append(repaired)
     save_project(project, tmp_path / 'combined.rockform')
     restored = load_project(tmp_path / 'combined.rockform').holds[1]
     assert restored.extraction == repaired.extraction
+    assert np.array_equal(restored.repair_body.vertices, repaired.repair_body.vertices)
     assert np.array_equal(original_feature(restored).patch.vertices, original)
     assert build_solid(restored).volume == pytest.approx(repaired.solid.volume, rel=1e-6)
     restored.mounts = generate_mounts(restored, project.profiles['bolt'], project.profiles['screw'], anti_rotation=False)
@@ -96,11 +103,68 @@ def test_combined_repair_refuses_protected_and_invalid_cuts():
     before = source.patch.vertices.copy()
     for height in (-1., float('nan'), 40.):
         with pytest.raises(GeometryError):
-            quick_repair(source, 'trim-fill', trim_height=height)
+            quick_repair(source, 'fill-trim', trim_height=height)
     source.protected_triangles = source.patch.triangles[:1].copy()
     with pytest.raises(GeometryError, match='protected'):
-        quick_repair(source, 'trim-fill', trim_height=5.)
+        quick_repair(source, 'fill-trim', trim_height=5.)
     assert np.array_equal(source.patch.vertices, before) and source.solid is None
+
+
+def test_fill_removes_enclosed_fragments_and_rejects_exterior_pieces():
+    body = trimesh.creation.box(extents=[10, 10, 10])
+    fragment = trimesh.creation.box(extents=[1, 1, 1])
+    repaired = _connected_fill(trimesh.util.concatenate([body, fragment]))
+    assert repaired.is_volume and repaired.volume == pytest.approx(body.volume)
+    assert np.allclose(repaired.bounds, body.bounds)
+    fragment.apply_translation([10, 0, 0])
+    with pytest.raises(GeometryError, match='outside the main body'):
+        _connected_fill(trimesh.util.concatenate([body, fragment]))
+
+
+def test_filled_cut_body_survives_shape_edits_and_uses_new_project_format(tmp_path):
+    import json
+    import zipfile
+    project, source = uneven_rim_feature()
+    repaired = quick_repair(source, 'fill-trim', trim_height=5.)
+    base = repaired.repair_body.vertices.copy()
+    repaired.scale = 1.2
+    resized = build_solid(repaired)
+    assert resized.is_volume and np.allclose(resized.extents, repaired.solid.extents * 1.2)
+    repaired.tilt_x, repaired.tilt_y, repaired.backing = 8., -4., 2.
+    tilted = build_solid(repaired)
+    assert tilted.is_volume and tilted.bounds[0, 2] == pytest.approx(0., abs=1e-6)
+    assert np.array_equal(repaired.repair_body.vertices, base)
+    project.holds.append(repaired)
+    path = tmp_path / 'filled-cut.rockform'
+    save_project(project, path)
+    with zipfile.ZipFile(path) as archive:
+        assert json.loads(archive.read('project.json'))['version'] == 9
+    restored = load_project(path).holds[1]
+    assert build_solid(restored).volume == pytest.approx(tilted.volume)
+
+
+def test_trim_keeps_main_body_reports_offcuts_and_respects_protection():
+    xs = np.array([-60, -30, -5, 5, 20, 30, 40, 50.])
+    heights = np.array([1, 30, 1, 1, 10, 12, 10, 1.])
+    vertices = np.array([[x, y, z] for x, z in zip(xs, heights) for y in (-15., 15.)])
+    faces = [[2*i, 2*i+2, 2*i+1] for i in range(len(xs)-1)] + [[2*i+1, 2*i+2, 2*i+3] for i in range(len(xs)-1)]
+    patch = trimesh.Trimesh(vertices, faces, process=False)
+    source = Hold('Connected peaks', 'source', np.arange(len(faces)), patch, np.empty((0,3)), np.eye(4),
+                  feature_kind='protrusion', backing=0., edge_style='natural-base',
+                  extraction=dict(geometry_status='needs-repair', wall_offset_mm=0.))
+    repaired = quick_repair(source, 'fill-trim', trim_height=5.)
+    assert repaired.solid.is_volume
+    assert repaired.extraction['quick_repair']['separated_offcuts'] == 1
+    assert repaired.extraction['quick_repair']['offcut_volume_mm3'] > 1.
+    assert repaired.solid.bounds[1, 0] < 0 and repaired.patch.bounds[1, 0] < 0
+    lower = quick_repair(repaired, 'fill-trim', trim_height=0.)
+    assert lower.extraction['quick_repair']['separated_offcuts'] == 0
+    assert lower.patch.bounds[1, 0] == 50.
+    source.protected_triangles = patch.triangles[(patch.triangles[:, :, 0] >= 20).all(axis=1) &
+                                               (patch.triangles[:, :, 0] <= 40).all(axis=1)]
+    with pytest.raises(GeometryError, match='protected'):
+        quick_repair(source, 'fill-trim', trim_height=5.)
+    assert source.solid is None and source.patch.bounds[1, 0] == 50.
 
 
 def test_combined_ui_cut_height_save_reopen_and_restore(tmp_path):
@@ -119,12 +183,12 @@ def test_combined_ui_cut_height_save_reopen_and_restore(tmp_path):
         window.preview_quick_repair()
         wait_for_worker(window)
         assert not errors and window.hold_preview.solid.is_volume
-        assert window.quick_method.currentText() == 'Trim then fill' and window.trim_height.value() == 5.
+        assert window.quick_method.currentText() == 'Fill then trim' and window.trim_height.value() == 5.
         window.capture_workspace()
         save_project(project, tmp_path / 'combined-ui.rockform')
         window.set_project(load_project(tmp_path / 'combined-ui.rockform'), str(tmp_path / 'combined-ui.rockform'))
-        assert window.quick_method.currentText() == 'Trim then fill' and window.trim_height.value() == 5.
-        assert window.hold_preview.extraction['quick_repair']['method'] == 'trim-fill'
+        assert window.quick_method.currentText() == 'Fill then trim' and window.trim_height.value() == 5.
+        assert window.hold_preview.extraction['quick_repair']['method'] == 'fill-trim'
         window.restore_feature()
         assert window.hold_preview.solid is None
         assert np.array_equal(window.hold_preview.patch.vertices, source.patch.vertices)

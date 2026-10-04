@@ -1,7 +1,7 @@
-ROCKFORM 0.1.10 - WINDOWS PROTOTYPE
+ROCKFORM 0.1.11 - WINDOWS PROTOTYPE
 
 START THE APP
-1. Obtain Rockform-0.1.10-Windows-x64.zip.
+1. Obtain Rockform-0.1.11-Windows-x64.zip.
 2. Use Extract All to unpack the entire ZIP.
 3. Open the extracted folder and double-click Rockform.exe.
 
@@ -26,12 +26,14 @@ Export STL for your slicer in millimeters. Save project to keep editable work.
 The Guide button explains the workflow. Right-drag paints with a selected brush;
 left-drag rotates the view and the mouse wheel zooms.
 
-NEW IN 0.1.10
-Quick repair now offers Trim then fill. Choose one base cut height to remove
-lower extensions, then fill remaining open edges to a back 3 mm below the cut.
-The cut does not need to clear every damaged boundary. Preview and compare
-with the original before keeping. Lowering the height restores previously cut
-rock from the saved original. Filling can cover undercuts.
+NEW IN 0.1.11
+Quick repair now offers Fill then trim. Fill the original feature first, then
+cut the completed solid at one height above the fitted wall. This plane becomes
+the flat back. Start at 0 mm and raise it to remove unwanted lower extensions.
+The main body is kept if trimming separates offcuts; compare the original in
+coral to inspect removed rock. Protected grip detail cannot be removed.
+Fill also handles enclosed union fragments without rejecting the valid body.
+Lowering the height restores previously cut rock. Filling can cover undercuts.
 
 SURROUNDING ROCK
 Raised holds retain 10 mm of surrounding scanned rock for fingers wrapping
@@ -59,14 +61,15 @@ QUICK REPAIR
 Select a raised feature marked Needs repair, then use 2 Holds > Quick repair.
 Fill down to wall adds material below the observed surface without a plate.
 Trim damaged base cuts off the lower damaged portion; adjust its height if needed.
-Trim then fill combines a manual base cut with filling the remaining open edges.
+Fill then trim fills first, then cuts the completed solid at your chosen height.
 Click Preview quick repair, compare the original in coral, then Keep hold.
 Amber shows added material. Fill can cover undercuts; trim makes the hold shallower.
 Restore original feature remains available after saving and reopening.
 All options must pass solid checks before mounting/export. Recesses still use
 scan gap repair to preserve their cavity. Missing front patches may need a rescan.
-Projects keep previews, selections, settings and the saved view. New saves use
-format 8 and require Rockform 0.1.7 or later; older projects remain readable.
+Projects keep previews, selections, settings and the saved view. Fill then trim
+projects use format 9 and require 0.1.11 or later to preserve the filled body.
+Other saves use format 8 and require 0.1.7 or later; older projects remain readable.
 
 A reference Scaniverse scan yields a roughly 171 x 130 x 42 mm raised hold with
 the default contact margin. Match the editable prototype profiles to your
