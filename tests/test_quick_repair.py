@@ -22,7 +22,7 @@ def broken_feature():
     revision = Revision(mesh)
     reference, regions = feature_regions(revision)
     kind, patch = max(regions, key=lambda value: value[1].area)
-    hold = protrusion_hold(revision, patch, reference, kind=kind, allow_incomplete=True)
+    hold = protrusion_hold(revision, patch, reference, kind=kind, allow_incomplete=True, contact_margin_mm=0.)
     assert hold.solid is None
     return Project(mesh, 'Broken base', revisions=[revision], holds=[hold]), hold
 

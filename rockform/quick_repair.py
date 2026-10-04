@@ -158,12 +158,21 @@ def quick_repair(hold, method="fill", trim_height=None, up=None, context=None):
     offset = float(source.extraction.get("wall_offset_mm", 0.))
     metadata = dict(method=method, source_hold_id=hold.id, inferred=True,
                     numerical_tolerance_mm=.001 if method == "fill" else 0.)
+    contact_margin = float(source.extraction.get("contact_margin_mm", 0.))
     if method == "fill":
         repaired.edge_style = "projected-base"
-        shift = offset
+        # A retained contact band may extend below the fitted wall. Put the
+        # back beneath it so filling cannot drop or flatten that scanned rock.
+        shift = max(offset, 3. - float(source.patch.vertices[:, 2].min())) if contact_margin else offset
+        metadata["backing_below_wall_mm"] = float(shift - offset)
         repaired.preparation = ("Quick repair: filled straight down to the fitted wall. Amber surfaces are inferred material; "
                                 "undercuts below the observed surface can be filled. No surrounding plate was added. "
                                 "Compare with the original feature before keeping.")
+        if contact_margin:
+            repaired.preparation = ("Quick repair: filled beneath the observed feature and retained surrounding rock, "
+                                    "with the flat back at least 3 mm below the lowest retained scan point. "
+                                    "Amber is inferred support; undercuts can be filled. Missing contact texture is not added. "
+                                    "Compare with the original feature before keeping.")
     else:
         height = suggested_trim_height(source) if trim_height is None else float(trim_height)
         if not np.isfinite(height) or height < 0:
@@ -184,6 +193,11 @@ def quick_repair(hold, method="fill", trim_height=None, up=None, context=None):
         repaired.preparation = (f"Quick repair: cut the damaged base at {height:.2f} mm above the fitted wall and closed the new underside. "
                                 "The remaining scanned surface is retained; no side fill or surrounding plate was added. "
                                 "Show the original feature to inspect what was removed before keeping.")
+        if contact_margin:
+            repaired.extraction["contact_margin_mm"] = 0.
+            repaired.extraction.pop("contact_margin_complete", None)
+            metadata["removed_contact_margin_mm"] = contact_margin
+            repaired.preparation += " Trimming removed the surrounding contact margin; the original is saved for comparison."
     repaired.patch.vertices[:, 2] += shift
     repaired.frame[2, 3] += shift
     repaired.protected_points[:, 2] += shift
