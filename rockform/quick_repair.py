@@ -144,8 +144,8 @@ def quick_repair(hold, method="fill", trim_height=None, up=None, context=None):
         raise GeometryError("Quick base repair currently works on raised features. Use scan gap repair for recesses to preserve their cavity.")
     if source.solid is not None:
         raise GeometryError("Select an incomplete raised feature for quick repair.")
-    if method not in ("fill", "trim"):
-        raise GeometryError("Choose Fill down to wall or Trim damaged base.")
+    if method not in ("fill", "trim", "trim-fill"):
+        raise GeometryError("Choose Fill down to wall, Trim damaged base, or Trim then fill.")
     repaired = deepcopy(source)
     repaired.id = uuid.uuid4().hex
     repaired.repair_source = source
@@ -157,14 +157,37 @@ def quick_repair(hold, method="fill", trim_height=None, up=None, context=None):
     repaired.backing, repaired.edge_flare = 0., 0.
     offset = float(source.extraction.get("wall_offset_mm", 0.))
     metadata = dict(method=method, source_hold_id=hold.id, inferred=True,
-                    numerical_tolerance_mm=.001 if method == "fill" else 0.)
+                    numerical_tolerance_mm=.001 if method != "trim" else 0.)
     contact_margin = float(source.extraction.get("contact_margin_mm", 0.))
-    if method == "fill":
+    if method in ('trim', 'trim-fill'):
+        height = (suggested_trim_height(source) if method == 'trim' else 0.) if trim_height is None else float(trim_height)
+        if not np.isfinite(height) or height < 0:
+            raise GeometryError("Enter a finite, nonnegative trim height above the fitted wall.")
+        cut_height = height - offset
+        if repaired.patch.bounds[1, 2] - cut_height < 3.:
+            raise GeometryError("That cut would leave less than 3 mm of feature height. Lower the cut or use Fill down to wall.")
+        if len(source.protected_triangles) and source.protected_triangles[:, :, 2].min() < cut_height:
+            raise GeometryError("This cut would remove protected grip detail. Lower the trim plane or change the protected region.")
+        ctx.step(20, "Cutting off the damaged lower portion…")
+        repaired.patch = trimesh.intersections.slice_mesh_plane(repaired.patch, [0,0,1], [0,0,cut_height], cap=False)
+        if not len(repaired.patch.faces):
+            raise GeometryError("No surface remains above this cut. Lower the trim height.")
+        _weld_cut_seams(repaired.patch)
+        metadata["trim_height_above_wall_mm"] = height
+        if contact_margin:
+            repaired.extraction["contact_margin_mm"] = 0.
+            repaired.extraction.pop("contact_margin_complete", None)
+            metadata["removed_contact_margin_mm"] = contact_margin
+    if method != "trim":
         repaired.edge_style = "projected-base"
-        # A retained contact band may extend below the fitted wall. Put the
-        # back beneath it so filling cannot drop or flatten that scanned rock.
-        shift = max(offset, 3. - float(source.patch.vertices[:, 2].min())) if contact_margin else offset
-        metadata["backing_below_wall_mm"] = float(shift - offset)
+        # Combined repair fills below the cut, without restoring trimmed rock.
+        # Fill-only also retains contact texture below the fitted wall.
+        if method == 'trim-fill':
+            shift = 3. - cut_height
+            metadata.update(backing_below_trim_mm=3., fill_plane_above_wall_mm=height - 3.)
+        else:
+            shift = max(offset, 3. - float(repaired.patch.vertices[:, 2].min())) if contact_margin else offset
+            metadata["backing_below_wall_mm"] = float(shift - offset)
         repaired.preparation = ("Quick repair: filled straight down to the fitted wall. Amber surfaces are inferred material; "
                                 "undercuts below the observed surface can be filled. No surrounding plate was added. "
                                 "Compare with the original feature before keeping.")
@@ -173,30 +196,18 @@ def quick_repair(hold, method="fill", trim_height=None, up=None, context=None):
                                     "with the flat back at least 3 mm below the lowest retained scan point. "
                                     "Amber is inferred support; undercuts can be filled. Missing contact texture is not added. "
                                     "Compare with the original feature before keeping.")
+        if method == 'trim-fill':
+            repaired.preparation = (f"Quick repair: trimmed the base at {height:.2f} mm above the fitted wall, "
+                                    "then filled remaining open edges down to a flat back 3 mm below the cut. "
+                                    "The remaining scanned surface is retained; amber is inferred support and fill can cover undercuts. "
+                                    "Compare the original in coral to inspect removed rock before keeping.")
     else:
-        height = suggested_trim_height(source) if trim_height is None else float(trim_height)
-        if not np.isfinite(height) or height < 0:
-            raise GeometryError("Enter a finite, nonnegative trim height above the fitted wall.")
-        cut_height = height - offset
-        if source.patch.bounds[1, 2] - cut_height < 3.:
-            raise GeometryError("That cut would leave less than 3 mm of feature height. Lower the cut or use Fill down to wall.")
-        if len(source.protected_triangles) and source.protected_triangles[:, :, 2].min() < cut_height:
-            raise GeometryError("This cut would remove protected grip detail. Lower the trim plane or change the protected region.")
-        ctx.step(20, "Cutting off the damaged lower portion…")
-        repaired.patch = trimesh.intersections.slice_mesh_plane(source.patch, [0,0,1], [0,0,cut_height], cap=False)
-        if not len(repaired.patch.faces):
-            raise GeometryError("No surface remains above this cut. Lower the trim height.")
-        _weld_cut_seams(repaired.patch)
         repaired.edge_style = "natural-base"
         shift = -cut_height
-        metadata["trim_height_above_wall_mm"] = height
         repaired.preparation = (f"Quick repair: cut the damaged base at {height:.2f} mm above the fitted wall and closed the new underside. "
                                 "The remaining scanned surface is retained; no side fill or surrounding plate was added. "
                                 "Show the original feature to inspect what was removed before keeping.")
         if contact_margin:
-            repaired.extraction["contact_margin_mm"] = 0.
-            repaired.extraction.pop("contact_margin_complete", None)
-            metadata["removed_contact_margin_mm"] = contact_margin
             repaired.preparation += " Trimming removed the surrounding contact margin; the original is saved for comparison."
     repaired.patch.vertices[:, 2] += shift
     repaired.frame[2, 3] += shift
@@ -210,7 +221,9 @@ def quick_repair(hold, method="fill", trim_height=None, up=None, context=None):
                 raise GeometryError("The cut has not cleared every damaged boundary.")
         repaired.solid = build_solid(repaired, ctx)
     except GeometryError as error:
-        advice = "Raise the trim height to clear the broken boundary, or try Fill down to wall." if method == "trim" else "Try Trim damaged base or repair the source scan."
+        advice = ("Raise the trim height to clear the boundary, or try Trim then fill to close the remaining damaged edges." if method == "trim" else
+                  "Adjust the cut height or repair the source scan." if method == "trim-fill" else
+                  "Try Trim then fill or repair the source scan.")
         raise GeometryError(f"Quick repair could not produce a valid solid. {advice} Detail: {error}") from error
     if len(repaired.protected_triangles):
         points = np.vstack([repaired.protected_triangles.reshape(-1, 3), repaired.protected_triangles.mean(axis=1)])

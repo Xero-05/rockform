@@ -1,7 +1,7 @@
-ROCKFORM 0.1.9 - WINDOWS PROTOTYPE
+ROCKFORM 0.1.10 - WINDOWS PROTOTYPE
 
 START THE APP
-1. Obtain Rockform-0.1.9-Windows-x64.zip.
+1. Obtain Rockform-0.1.10-Windows-x64.zip.
 2. Use Extract All to unpack the entire ZIP.
 3. Open the extracted folder and double-click Rockform.exe.
 
@@ -26,7 +26,14 @@ Export STL for your slicer in millimeters. Save project to keep editable work.
 The Guide button explains the workflow. Right-drag paints with a selected brush;
 left-drag rotates the view and the mouse wheel zooms.
 
-NEW IN 0.1.9
+NEW IN 0.1.10
+Quick repair now offers Trim then fill. Choose one base cut height to remove
+lower extensions, then fill remaining open edges to a back 3 mm below the cut.
+The cut does not need to clear every damaged boundary. Preview and compare
+with the original before keeping. Lowering the height restores previously cut
+rock from the saved original. Filling can cover undercuts.
+
+SURROUNDING ROCK
 Raised holds retain 10 mm of surrounding scanned rock for fingers wrapping
 around the base. In 2 Holds, adjust Surrounding rock from 0 to 50 mm before
 suggesting or previewing. Retained texture, overhangs, and grip surfaces stay on
@@ -52,10 +59,11 @@ QUICK REPAIR
 Select a raised feature marked Needs repair, then use 2 Holds > Quick repair.
 Fill down to wall adds material below the observed surface without a plate.
 Trim damaged base cuts off the lower damaged portion; adjust its height if needed.
+Trim then fill combines a manual base cut with filling the remaining open edges.
 Click Preview quick repair, compare the original in coral, then Keep hold.
 Amber shows added material. Fill can cover undercuts; trim makes the hold shallower.
 Restore original feature remains available after saving and reopening.
-Both options must pass solid checks before mounting/export. Recesses still use
+All options must pass solid checks before mounting/export. Recesses still use
 scan gap repair to preserve their cavity. Missing front patches may need a rescan.
 Projects keep previews, selections, settings and the saved view. New saves use
 format 8 and require Rockform 0.1.7 or later; older projects remain readable.
