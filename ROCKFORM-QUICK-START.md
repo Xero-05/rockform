@@ -1,4 +1,4 @@
-# Extracting the natural feature in Rockform 0.1.9
+# Extracting the natural feature in Rockform 0.1.10
 
 1. Import the Scaniverse OBJ and confirm scale. **Automatically reduce dense, low-detail areas** is enabled initially; uncheck it to retain every triangle. The full-resolution original remains available with Undo or Reset scan.
 2. In **1 Repair**, click **Paint area of interest** and RIGHT-drag over useful rock. Violet marks the selection. Include surrounding wall; the default **20 mm margin** adds context. Click **Preview selected area**, inspect coral excluded geometry, then **Apply selected area**. You can also use the entire current scan. Next, preview repair and apply it after inspection; excluded regions are not repaired.
@@ -21,10 +21,10 @@ For an existing large-plate design, select it and choose **Re-extract natural fe
 ## Quick repair for a broken raised feature
 
 1. Select or preview the **Needs repair** feature, then find **Quick repair** in **2 Holds**.
-2. Choose **Fill down to wall** to close beneath the observed surface, or **Trim damaged base** to cut off the damaged lower portion.
-3. Click **Preview quick repair**. Trim height is automatic initially; disable automatic height to enter an exact cut height above the fitted wall.
+2. Choose **Trim then fill** to remove lower extensions and fill the edges that remain open. Enter **Trim height above wall** in millimeters; start low and raise it until the unwanted rock is removed. The flat back is 3 mm below this cut.
+3. Click **Preview quick repair**. **Fill down to wall** and **Trim damaged base** are also available. Trim-only height is automatic initially; disable automatic height to adjust it manually. Trim alone must clear every damaged boundary; the combined mode can fill damage above the cut.
 4. Inspect amber added material. **Show original feature in coral** overlays the unrepaired surface, including material removed by trimming.
-5. Click **Keep hold** when satisfied. Switch methods to compare another repair, or choose **Restore original feature**. Save/reopen retains the original and unfinished repair preview.
+5. Click **Keep hold** when satisfied. Switch methods or lower the cut to revise the repair from its original surface, or choose **Restore original feature**. Save/reopen retains the original and unfinished repair preview.
 
 Fill can cover undercuts and does not bridge a missing front patch. Trim reduces the remaining feature height. These are explicit shape edits; quick repair currently applies to raised features. Protected details and invalid cuts produce an explanation instead of an exportable solid.
 

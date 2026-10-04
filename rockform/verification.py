@@ -127,9 +127,9 @@ def run_scan(source, destination):
 
 
 def run_quick_repair(source, destination):
-    """Exercise both explicit repairs on a saved incomplete feature."""
+    """Exercise all explicit repairs on a saved incomplete feature."""
     from hashlib import sha256
-    from .quick_repair import quick_repair, original_feature
+    from .quick_repair import quick_repair, original_feature, suggested_trim_height
     from .geometry import validate_solid
     output = Path(destination)
     output.mkdir(parents=True, exist_ok=True)
@@ -146,9 +146,11 @@ def run_quick_repair(source, destination):
                 print(message, flush=True)
                 last_message[0] = message
         context = TaskContext(progress)
-        for method in ('fill', 'trim'):
+        for method in ('fill', 'trim', 'trim-fill'):
             print(f'Checking quick repair: {method}', flush=True)
-            repaired = quick_repair(feature, method, up=project.up, context=context)
+            # Exercise a combined cut below the height that clears all damage.
+            height = round(suggested_trim_height(feature) * .5, 2) if method == 'trim-fill' else None
+            repaired = quick_repair(feature, method, trim_height=height, up=project.up, context=context)
             repaired.name = f'Quick repair - {method}'
             print(f'Repaired solid: {len(repaired.solid.faces)} triangles', flush=True)
             result, stl, _ = export_hold(repaired, output/f'{method}.stl', context)
@@ -159,12 +161,12 @@ def run_quick_repair(source, destination):
             repairs.append(repaired)
             report['repairs'].append(dict(method=method, dimensions_mm=result.extents.tolist(),
                                          watertight=True, metadata=repaired.extraction['quick_repair']))
-        project.holds = repairs + [feature]
+        project.holds = [repairs[-1], *repairs[:-1], feature]
         project.workspace = {}
         project.pending_hold = None
         save_project(project, output/'Quick repair examples.rockform')
         restored = load_project(output/'Quick repair examples.rockform')
-        for hold in restored.holds[:2]:
+        for hold in restored.holds[:len(repairs)]:
             assert hold.repair_source.solid is None and hold.solid.is_volume
             assert np.array_equal(hold.repair_source.patch.vertices, feature.patch.vertices)
         check_native_view(output, restored, tab=1)
@@ -211,6 +213,11 @@ def check_native_view(output, project, tab=2):
         assert np.array_equal(window.hold_preview.patch.vertices, project.holds[0].patch.vertices)
         assert window.selected.any()
         assert window.tabs.currentIndex() == saved_tab
+        repair = project.holds[0].extraction.get('quick_repair', {})
+        if repair.get('method') == 'trim-fill':
+            assert window.quick_method.currentText() == 'Trim then fill'
+            assert window.trim_height.value() == repair['trim_height_above_wall_mm']
+            assert window.trim_height.isEnabled() and window.auto_trim.isHidden()
     project.workspace = {}
     project.pending_hold = None
     window.set_project(project)

@@ -402,14 +402,14 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(button("Preview hold from selection", self.create_hold, True))
         layout.addWidget(label("Quick repair", "section"))
         self.quick_method = QtWidgets.QComboBox()
-        self.quick_method.addItems(["Fill down to wall", "Trim damaged base"])
-        self.quick_method.setToolTip("For incomplete raised features. Fill adds material straight down to the fitted wall; trim removes the lower damaged portion.")
+        self.quick_method.addItems(["Fill down to wall", "Trim damaged base", "Trim then fill"])
+        self.quick_method.setToolTip("For incomplete raised features. Trim then fill removes the base below your chosen height, then fills the remaining open edges. Inspect amber support and compare with the original.")
         layout.addWidget(self.quick_method)
         self.auto_trim = QtWidgets.QCheckBox("Find trim height automatically")
         self.auto_trim.setChecked(True)
         layout.addWidget(self.auto_trim)
         self.trim_height = number(0, 0, 1000)
-        self.trim_height.setToolTip("Cut height above the fitted wall, in original scan millimeters. Turn off automatic height to adjust it.")
+        self.trim_height.setToolTip("Cut height above the fitted wall, in original scan millimeters. Trim then fill uses your chosen height; Trim damaged base also offers automatic height.")
         trim_form = QtWidgets.QFormLayout()
         self.trim_label = QtWidgets.QLabel("Trim height above wall")
         trim_form.addRow(self.trim_label, self.trim_height)
@@ -421,9 +421,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.compare_repair = QtWidgets.QCheckBox("Show original feature in coral")
         self.compare_repair.toggled.connect(lambda: self.refresh())
         layout.addWidget(self.compare_repair)
-        self.quick_method.currentIndexChanged.connect(self.update_quick_controls)
+        self.quick_method.currentIndexChanged.connect(self.repair_method_changed)
         self.auto_trim.toggled.connect(self.update_quick_controls)
-        layout.addWidget(label("Preview first, then Keep hold. The original is saved with the repair. Fill can cover undercuts; trim makes the feature shallower. Raised features only."))
+        layout.addWidget(label("Trim then fill: choose a cut height, preview, then Keep hold. The original stays saved for comparison. Fill can cover undercuts; trim makes the feature shallower. Raised features only."))
         self.hold_preview_text = label("Preview a shape, then Keep hold to add it to your library.")
         layout.addWidget(self.hold_preview_text)
         preview_row = QtWidgets.QHBoxLayout()
@@ -599,7 +599,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "5. In 2 Holds, click Suggest holds and choose a result. Or select the Select hold brush below the viewer and RIGHT-drag over a small feature.\n\n"
             "6. Click Preview hold from selection. Inspect the result, then click Keep hold.\n\n"
             "Keep Isolate natural feature checked. Protrusions close at their root without an added plate; recesses receive material under the cavity. Green shows rock and amber shows added support. Re-extract natural feature creates a replacement preview while keeping the old design.\n\n"
-            "For a raised feature marked Needs repair, use Quick repair: Fill down to wall or Trim damaged base. Preview, compare the original in coral, then Keep hold. Restore original feature remains available after save/reopen.\n\n"
+            "For a raised feature marked Needs repair, use Quick repair. Trim then fill removes rock below your chosen height and fills the remaining open edges to a flat back 3 mm below the cut. Fill down to wall and Trim damaged base remain available. Preview, compare the original in coral, then Keep hold. Restore original feature remains available after save/reopen.\n\n"
             "7. In 3 Mounts, the prototype bolt and screw profiles are ready to try. Their size requirements are shown below the profile buttons. Match actual hardware before printing. Generate mounts, preview the holes, and export STL.\n\n"
             "8. Save project preserves kept holds, unfinished previews, painted selections and your view. Reopen the .rockform file with Open project to continue. Keep hold and Apply preview still require your acceptance.\n\n"
             "Left-drag rotates; the wheel zooms. Face scan looks straight at the surface. A wall scan is allowed to have an open outer edge; only the extracted hold must be closed.")
@@ -1185,11 +1185,29 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tilt_x.setValue(hold.tilt_x)
         self.tilt_y.setValue(hold.tilt_y)
         if hold.feature_kind == "protrusion" and (hold.solid is None or hold.repair_source is not None):
+            repair = hold.extraction.get("quick_repair", {})
+            if repair.get('method') in ('fill', 'trim', 'trim-fill'):
+                blocker = QtCore.QSignalBlocker(self.quick_method)
+                self.quick_method.setCurrentIndex(('fill', 'trim', 'trim-fill').index(repair['method']))
+                del blocker
             try:
-                self.trim_height.setValue(hold.extraction.get("quick_repair", {}).get(
-                    "trim_height_above_wall_mm", suggested_trim_height(hold)))
+                self.trim_height.setValue(repair['trim_height_above_wall_mm'] if 'trim_height_above_wall_mm' in repair else
+                                          0. if self.quick_method.currentIndex() == 2 else suggested_trim_height(hold))
             except GeometryError:
                 pass
+
+    def repair_method_changed(self, *_):
+        target = self.quick_target()
+        if target is not None:
+            repair = target.extraction.get('quick_repair', {})
+            if self.quick_method.currentIndex() == 2:
+                self.trim_height.setValue(repair.get('trim_height_above_wall_mm', 0.))
+            elif self.quick_method.currentIndex() == 1 and self.auto_trim.isChecked():
+                try:
+                    self.trim_height.setValue(suggested_trim_height(target))
+                except GeometryError:
+                    pass
+        self.update_quick_controls()
 
     def quick_target(self):
         if self.view_mode.currentText() == "Hold" and self.hold is not None:
@@ -1203,26 +1221,27 @@ class MainWindow(QtWidgets.QMainWindow):
         self.quick_repair_button.setEnabled(enabled)
         self.restore_feature_button.setEnabled(enabled and target.repair_source is not None)
         self.compare_repair.setEnabled(target is not None and target.repair_source is not None)
-        trimming = self.quick_method.currentIndex() == 1
-        self.auto_trim.setVisible(trimming)
+        trimming = self.quick_method.currentIndex() in (1, 2)
+        combined = self.quick_method.currentIndex() == 2
+        self.auto_trim.setVisible(trimming and not combined)
         self.trim_label.setVisible(trimming)
         self.trim_height.setVisible(trimming)
         self.auto_trim.setEnabled(enabled and trimming)
-        self.trim_height.setEnabled(enabled and trimming and not self.auto_trim.isChecked())
+        self.trim_height.setEnabled(enabled and trimming and (combined or not self.auto_trim.isChecked()))
 
     def preview_quick_repair(self):
         target = self.quick_target()
         if target is None or self.worker:
             return
         source = deepcopy(target)
-        method = "fill" if self.quick_method.currentIndex() == 0 else "trim"
-        height = None if self.auto_trim.isChecked() else self.trim_height.value()
+        method = ('fill', 'trim', 'trim-fill')[self.quick_method.currentIndex()]
+        height = None if method == 'trim' and self.auto_trim.isChecked() else self.trim_height.value()
         up = self.project.up.copy()
         def ready(hold):
             self.hold_preview = hold
             self.dirty = True
             self.shape_fields(hold)
-            if method == "trim":
+            if method in ("trim", "trim-fill"):
                 self.trim_height.setValue(hold.extraction["quick_repair"]["trim_height_above_wall_mm"])
             self.hold_preview_text.setText(hold.preparation + "\n" + review_text(hold))
             self.view_mode.setCurrentText("Hold preview")
