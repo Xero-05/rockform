@@ -392,10 +392,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.prepare_boundary.setToolTip("Use the painted area to identify a protrusion or recess, then follow its natural root. Raised features also retain the chosen surrounding rock margin. Turn off to build a backed surface patch from the painted outline.")
         layout.addWidget(self.prepare_boundary)
         self.contact_margin = number(DEFAULT_CONTACT_MARGIN_MM, 0, 50)
-        self.contact_margin.setToolTip("Scanned rock retained around a raised feature for fingers wrapping around its base, in original scan millimeters. Set 0 to close at the root. Change this before previewing or re-extracting; existing holds keep their saved geometry.")
+        self.contact_margin.setToolTip("Scanned rock retained around a raised feature for fingers wrapping around its base, in original scan millimeters. Available texture is kept even near open scan edges; missing areas remain marked for repair. Set 0 to close at the root. Change this before previewing or re-extracting; existing holds keep their saved geometry.")
         contact_form = QtWidgets.QFormLayout()
         contact_form.addRow("Surrounding rock", self.contact_margin)
         layout.addLayout(contact_form)
+        self.contact_status = label("")
+        layout.addWidget(self.contact_status)
         self.prepare_boundary.toggled.connect(self.contact_margin.setEnabled)
         layout.addWidget(button("Preview hold from selection", self.create_hold, True))
         layout.addWidget(label("Quick repair", "section"))
@@ -1505,6 +1507,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.keep_hold_button.setText("Keep feature for repair" if self.hold_preview is not None and self.hold_preview.solid is None else "Keep hold")
         self.discard_hold_button.setEnabled(self.hold_preview is not None)
         self.update_quick_controls()
+        target = self.quick_target()
+        contact = float(target.extraction.get("contact_margin_mm", 0.)) if target else 0.
+        self.contact_status.setVisible(bool(contact))
+        self.contact_status.setText(f"{contact:.1f} mm contact margin: available scanned rock retained. " +
+            ("Coverage is incomplete; repair is still needed." if target and target.solid is None and target.extraction.get("contact_margin_complete") is False else
+             "Complete contact margin; the shape still needs repair." if target and target.solid is None else
+             "Missing texture remains absent after base repair." if target and target.extraction.get("contact_margin_complete") is False else
+             "Complete contact margin."))
         self.undo_button.setEnabled(bool(self.project and self.project.cursor > 0))
         self.redo_button.setEnabled(bool(self.project and self.project.cursor < len(self.project.revisions) - 1))
         try:
@@ -1602,8 +1612,12 @@ class MainWindow(QtWidgets.QMainWindow):
                     center=(mount.x, mount.y, z), radius=max(2, extent.max() * 0.012),
                     color="#f0b77c", selected_color="#f9dfb8", test_callback=False)
         state = "RECOGNIZED FEATURE · NEEDS REPAIR" if incomplete else "HOLD PREVIEW" if preview_hold is not None else ("DRILLED" if hold.result is not None else "NATURAL FEATURE" if hold.edge_style == "natural-base" else "SUPPORTED SHAPE")
+        contact = float(hold.extraction.get("contact_margin_mm", 0.))
+        contact_text = (f"\nSurrounding rock: {contact:.1f} mm" +
+                        (" · partial coverage" if hold.extraction.get("contact_margin_complete") is False else "")) if contact else ""
         self.plotter.add_text(f"{hold.name.upper()}  /  {state}\n" +
-                             " × ".join(f"{x:.1f}" for x in extent) + " mm", position="upper_left", font_size=11, color="#c5e3d5")
+                             " × ".join(f"{x:.1f}" for x in extent) + " mm" + contact_text,
+                             position="upper_left", font_size=11, color="#c5e3d5")
 
     def closeEvent(self, event):
         if self.worker:

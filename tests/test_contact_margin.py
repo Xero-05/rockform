@@ -10,6 +10,7 @@ from rockform.geometry import oriented_patch, generated_faces, validate_solid, b
 from rockform.storage import save_project, load_project, export_hold
 from rockform.mounts import generate_mounts
 from rockform.app import MainWindow
+from rockform.quick_repair import quick_repair, original_feature
 from test_natural_features import wall_with_feature
 from test_ui import wait_for_worker
 
@@ -134,12 +135,78 @@ def test_contact_band_does_not_cap_missing_scan_data_or_invent_wall_texture():
     assert root.solid.is_volume
     with pytest.raises(GeometryError, match='open scan edge'):
         prepare_feature(revision, selection, contact_margin_mm=20.)
+    partial = prepare_feature(revision, selection, allow_incomplete=True, contact_margin_mm=20.)
+    assert partial.solid is None and partial.extraction['contact_margin_complete'] is False
+    assert partial.patch.area > root.patch.area
+    assert trimesh.proximity.closest_point(mesh, world_surface(partial).vertices)[1].max() < 1e-6
+    trimmed = quick_repair(partial, 'trim')
+    assert trimmed.extraction['contact_margin_mm'] == 0.
+    assert trimmed.extraction['quick_repair']['removed_contact_margin_mm'] == 20.
+    assert original_feature(trimmed).extraction['contact_margin_mm'] == 20.
     mesh = wall_with_feature(resolution=41)
     centers = mesh.triangles_center
     mesh.update_faces(~((centers[:, 0] > 59) & (centers[:, 0] < 64) & (np.abs(centers[:, 1]) < 8)))
     mesh.remove_unreferenced_vertices()
     with pytest.raises(GeometryError, match='missing scan data'):
         prepare_feature(Revision(mesh), np.arange(len(mesh.faces)), contact_margin_mm=20.)
+    partial = prepare_feature(Revision(mesh), np.arange(len(mesh.faces)), allow_incomplete=True, contact_margin_mm=20.)
+    assert partial.solid is None and partial.extraction['geometry_status'] == 'needs-repair'
+    assert partial.extraction['contact_margin_complete'] is False
+    assert trimesh.proximity.closest_point(mesh, world_surface(partial).triangles_center)[1].max() < 1e-6
+
+
+def test_cropped_feature_retains_available_contact_texture_and_fill_keeps_low_wall(tmp_path):
+    mesh = textured_feature()
+    mesh = trimesh.intersections.slice_mesh_plane(mesh, [1, 0, 0], [-35, 0, 0], cap=False)
+    revision = Revision(mesh)
+    before = mesh.vertices.copy(), mesh.faces.copy()
+    selection = np.arange(len(mesh.faces))
+    root = prepare_feature(revision, selection, allow_incomplete=True, contact_margin_mm=0.)
+    hold = prepare_feature(revision, selection, allow_incomplete=True, contact_margin_mm=24.)
+    assert root.solid is None and hold.solid is None
+    assert hold.patch.area > root.patch.area * 1.2
+    assert hold.extraction['contact_margin_mm'] == 24.
+    assert hold.extraction['contact_margin_complete'] is False
+    assert 'Retained available scanned rock' in hold.preparation
+    retained = world_surface(hold)
+    assert trimesh.proximity.closest_point(mesh, retained.vertices)[1].max() < 1e-6
+    assert trimesh.proximity.closest_point(mesh, retained.triangles_center)[1].max() < 1e-6
+    assert trimesh.proximity.closest_point(retained, world_surface(root).triangles_center)[1].max() < 1e-6
+    assert np.array_equal(mesh.vertices, before[0]) and np.array_equal(mesh.faces, before[1])
+    assert hold.patch.vertices[:, 2].min() < -hold.extraction['wall_offset_mm']
+    repaired = quick_repair(hold, 'fill')
+    validate_solid(repaired.solid)
+    # Even the contact band below the fitted wall survives filling and resize.
+    assert repaired.patch.vertices[:, 2].min() >= 3. - 1e-6
+    assert trimesh.proximity.closest_point(repaired.solid, repaired.patch.triangles_center)[1].max() < .001
+    assert trimesh.proximity.closest_point(world_surface(repaired), retained.triangles_center)[1].max() < 1e-6
+    repaired.scale = 1.1
+    repaired.solid = build_solid(repaired)
+    surface, _ = oriented_patch(repaired)
+    assert trimesh.proximity.closest_point(repaired.solid, surface.triangles_center)[1].max() < .001
+    project = Project(mesh, 'Cropped contact', revisions=[revision], holds=[repaired])
+    save_project(project, tmp_path / 'cropped-contact.rockform')
+    restored = load_project(tmp_path / 'cropped-contact.rockform').holds[0]
+    assert restored.extraction == repaired.extraction
+    assert np.array_equal(original_feature(restored).patch.vertices, hold.patch.vertices)
+    _, stl, _ = export_hold(restored, tmp_path / 'cropped-contact.stl')
+    validate_solid(trimesh.load_mesh(stl))
+
+
+def test_contact_band_does_not_pull_in_a_deep_adjacent_rock_face():
+    mesh = textured_feature()
+    x = mesh.vertices[:, 0]
+    mesh.vertices[:, 2] -= np.maximum(x - 65., 0.) * 5.
+    revision = Revision(mesh)
+    reference = WallReference(np.eye(4), 1., .8, 0.)
+    seed = raised_patches(revision, reference)[0]
+    hold = protrusion_hold(revision, seed, reference, allow_incomplete=True, contact_margin_mm=24.)
+    retained = world_surface(hold)
+    assert mesh.vertices[:, 2].min() < -300.
+    assert retained.vertices[:, 2].min() >= seed.bounds[0, 2] - 24. - 1e-6
+    assert trimesh.proximity.closest_point(retained, seed.triangles_center)[1].max() < 1e-6
+    assert trimesh.proximity.closest_point(mesh, retained.vertices)[1].max() < 1e-6
+    assert hold.solid is None and hold.extraction['contact_margin_complete'] is False
 
 
 def test_margin_validation_and_cancellation():
@@ -152,6 +219,37 @@ def test_margin_validation_and_cancellation():
     ctx.cancelled = True
     with pytest.raises(Cancelled):
         prepare_feature(revision, np.arange(len(mesh.faces)), context=ctx)
+
+
+def test_partial_contact_preview_and_explicit_fill_remain_visible_in_ui():
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    window = MainWindow()
+    errors = []
+    window.show_error = errors.append
+    mesh = trimesh.intersections.slice_mesh_plane(textured_feature(), [1, 0, 0], [-35, 0, 0], cap=False)
+    try:
+        window.set_project(Project(mesh, 'Cropped contact workflow'))
+        window.selected[:] = True
+        window.contact_margin.setValue(24.)
+        window.create_hold()
+        wait_for_worker(window)
+        assert not errors and window.hold_preview.solid is None
+        assert '24.0 mm' in window.contact_status.text() and 'Coverage is incomplete' in window.contact_status.text()
+        assert window.quick_repair_button.isEnabled() and not window.export_button.isEnabled()
+        before = world_surface(window.hold_preview)
+        window.preview_quick_repair()
+        wait_for_worker(window)
+        assert not errors and window.hold_preview.solid.is_volume
+        assert 'Missing texture remains absent' in window.contact_status.text()
+        assert trimesh.proximity.closest_point(world_surface(window.hold_preview), before.triangles_center)[1].max() < 1e-6
+        window.accept_hold_preview()
+        assert window.export_button.isEnabled()
+    finally:
+        if window.worker:
+            window.cancel_job()
+            wait_for_worker(window)
+        window.dirty = False
+        window.close()
 
 
 def test_contact_geometry_mounts_and_metadata_survive_save_resize_and_export(tmp_path):
@@ -195,6 +293,7 @@ def test_margin_control_reextracts_cached_suggestion_and_restores_workspace(tmp_
         wait_for_worker(window)
         assert not errors
         assert window.hold_preview.extraction['contact_margin_mm'] == 15.
+        assert '15.0 mm' in window.contact_status.text() and 'Complete contact margin' in window.contact_status.text()
         window.accept_hold_preview()
         saved = window.hold
         saved.mounts = generate_mounts(saved, window.project.profiles['bolt'], window.project.profiles['screw'], anti_rotation=False)

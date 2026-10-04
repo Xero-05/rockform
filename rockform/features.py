@@ -10,7 +10,7 @@ from .geometry import frame_for_patch, boundary_loops, _weld_cut_seams, build_so
 DEFAULT_CONTACT_MARGIN_MM = 10.
 
 
-def _contact_patch(revision, patch, reference, margin, ctx):
+def _contact_patch(revision, patch, reference, margin, ctx, allow_incomplete=False):
     """Retain the original scan inside an offset of the feature's root.
 
     Clip triangles in the wall plane and lift their subdivisions back onto the
@@ -22,15 +22,32 @@ def _contact_patch(revision, patch, reference, margin, ctx):
     from shapely.geometry import Polygon, LineString
 
     ctx.step(28, "Preserving surrounding rock for hand contact…")
-    root = Polygon(patch.vertices[boundary_loops(patch)[0], :2])
-    if not root.is_valid or root.area < 1e-4:
-        raise GeometryError("The feature's root overlaps in the wall plane. Repair the scan before retaining surrounding rock.")
     seed_triangles = shapely.polygons(patch.triangles[:, :, :2])
+    try:
+        roots = [Polygon(patch.vertices[loop, :2]) for loop in boundary_loops(patch)]
+        if not roots:
+            raise GeometryError("The observed feature has no root outline in the wall plane.")
+        root = max(roots, key=lambda polygon: polygon.area)
+        if not root.is_valid or root.area < 1e-4:
+            raise GeometryError("The feature's root overlaps in the wall plane. Repair the scan before retaining surrounding rock.")
+    except GeometryError:
+        if not allow_incomplete:
+            raise
+        # A damaged rim may branch or overlap in projection. Offset the
+        # observed footprint; clipping still retains only actual scan faces.
+        root = shapely.union_all(seed_triangles[shapely.is_valid(seed_triangles)])
+        if root.is_empty or root.area < 1e-4:
+            raise GeometryError("The observed feature is too narrow to retain surrounding rock.")
     outside = ~shapely.covers(root, seed_triangles)
     outline = shapely.union_all([root.buffer(margin, quad_segs=8),
                                 *seed_triangles[outside]])
     local = revision.mesh.copy()
     local.apply_transform(reference.frame)
+    # A wall-plane footprint can also cover a deep recess or a perpendicular
+    # rock face. Keep context within the requested depth below the observed
+    # root, rather than pulling an arbitrarily deep sheet into the hand area.
+    local = trimesh.intersections.slice_mesh_plane(local, [0, 0, 1],
+        [0, 0, float(patch.bounds[0, 2]) - margin], cap=False)
     triangles = local.triangles
     lo, hi = outline.bounds[:2], outline.bounds[2:]
     nearby = np.flatnonzero((triangles[:, :, :2].max(axis=1) >= lo).all(axis=1) &
@@ -99,13 +116,19 @@ def _contact_patch(revision, patch, reference, margin, ctx):
     # Separate overlapping/disconnected scan sheets cannot become this hold.
     pieces = list(expanded.split(only_watertight=False, repair=False))
     expanded = min(pieces, key=lambda piece: trimesh.proximity.closest_point(piece, patch.triangles_center[:1])[1][0])
-    loops = boundary_loops(expanded)
-    if len(loops) != 1:
-        raise GeometryError("The surrounding contact area contains missing scan data. Repair the scan or reduce Surrounding rock.")
-    rim = expanded.vertices[loops[0], :2]
-    if shapely.distance(outline.boundary, shapely.points(rim)).max() > 1e-4:
-        raise GeometryError("The contact margin reaches an open scan edge or gap. Include more surrounding rock in the scan or reduce Surrounding rock.")
-    return expanded
+    issue = ""
+    try:
+        loops = boundary_loops(expanded)
+        if len(loops) != 1:
+            raise GeometryError("The surrounding contact area contains missing scan data. Repair the scan or reduce Surrounding rock.")
+        rim = expanded.vertices[loops[0], :2]
+        if shapely.distance(outline.boundary, shapely.points(rim)).max() > 1e-4:
+            raise GeometryError("The contact margin reaches an open scan edge, gap or deeper rock face. Include more surrounding rock, reduce Surrounding rock, or inspect the retained area for repair.")
+    except GeometryError as error:
+        if not allow_incomplete:
+            raise
+        issue = str(error)
+    return expanded, issue
 
 
 @dataclass
@@ -200,6 +223,7 @@ def protrusion_hold(revision, patch, reference, name="Hold", context=None, kind=
     if not np.isfinite(contact_margin_mm) or not 0 <= contact_margin_mm <= 50.:
         raise GeometryError("Surrounding rock must be between 0 and 50 mm.")
     contact_margin = 0.
+    contact_issue = ""
     issue = ""
     loops = []
     cut_height = reference.tolerance if kind == "protrusion" else -reference.tolerance
@@ -214,12 +238,16 @@ def protrusion_hold(revision, patch, reference, name="Hold", context=None, kind=
         issue = f"This feature has broken boundaries or missing scan data. Detail: {error}"
         if not allow_incomplete:
             raise GeometryError(issue) from error
-    if not issue and kind == "protrusion" and contact_margin_mm > 0:
-        # A damaged feature keeps its observed root for the explicit quick
-        # repair workflow. Do not invent contact texture across missing data.
-        patch = _contact_patch(revision, patch, reference, contact_margin_mm, ctx)
+    if kind == "protrusion" and contact_margin_mm > 0:
+        patch, contact_issue = _contact_patch(revision, patch, reference, contact_margin_mm, ctx, allow_incomplete)
         contact_margin = float(contact_margin_mm)
-        loops = boundary_loops(patch)
+        # Re-evaluate the retained surface: a hole in the height-cut seed can
+        # be an observed valley below the cut, rather than missing scan data.
+        issue = contact_issue
+        try:
+            loops = boundary_loops(patch)
+        except GeometryError:
+            loops = []
     # Store a rigidly translated scan in the wall frame. Root-only extraction
     # closes at zero; a contact band keeps its measured rim heights unchanged.
     frame = reference.frame.copy()
@@ -244,6 +272,8 @@ def protrusion_hold(revision, patch, reference, name="Hold", context=None, kind=
                 extraction=dict(wall_offset_mm=cut_height, wall_noise_mm=reference.noise,
                                 wall_support_fraction=reference.inlier_fraction,
                                 contact_margin_mm=contact_margin, requested_contact_margin_mm=float(contact_margin_mm)))
+    if contact_margin:
+        hold.extraction["contact_margin_complete"] = not bool(contact_issue)
     if issue and loops:
         outer = max(range(len(loops)), key=lambda i: np.linalg.norm(np.ptp(patch.vertices[loops[i]], axis=0)))
         boundaries = []
@@ -255,6 +285,9 @@ def protrusion_hold(revision, patch, reference, name="Hold", context=None, kind=
         hold.extraction["missing_boundaries"] = boundaries
     if len(triangles):
         hold.protected_triangles = trimesh.transform_points(triangles.reshape(-1, 3), frame).reshape(-1, 3, 3)
+    if contact_margin:
+        hold.backing = 3.
+        hold.edge_style = "wall-ramp"
     if kind == "recess":
         hold.backing = 3.
         hold.edge_style = "wall-ramp"
@@ -262,8 +295,6 @@ def protrusion_hold(revision, patch, reference, name="Hold", context=None, kind=
                             "3 mm below the deepest point, with an outside return to make a closed pocket prototype. "
                             "This supporting material is needed for the cavity; inspect the amber surfaces.")
     elif contact_margin:
-        hold.backing = 3.
-        hold.edge_style = "wall-ramp"
         hold.preparation = (f"Preserved the raised feature and {contact_margin:.1f} mm of surrounding scanned rock "
                             "for contact around its base. Retained texture and grip geometry are unchanged. "
                             "Added 3 mm beneath the lowest retained point and a gradual outside return to the flat back. "
@@ -282,9 +313,9 @@ def protrusion_hold(revision, patch, reference, name="Hold", context=None, kind=
         hold.extraction.update(geometry_status="needs-repair", geometry_issue=issue)
         hold.preparation = ("Feature recognized from the available scanned surface. Needs repair before mounting or STL export. "
                             + issue + " Missing boundaries are highlighted; missing grip geometry has not been invented.")
-        if kind == "protrusion" and contact_margin_mm > 0 and not contact_margin:
-            hold.preparation += (" The surrounding rock margin could not be added to this incomplete root; "
-                                 "repair the scan and re-extract to retain contact texture around the base.")
+        if contact_margin:
+            hold.preparation += (f" Retained available scanned rock within the requested {contact_margin:.1f} mm contact margin. "
+                                 "Inspect incomplete coverage at scan edges, gaps or deeper rock; no missing texture was added.")
         details = hold.extraction.get("missing_boundaries", [])
         if details:
             hold.preparation += " Detected: " + "; ".join(b['kind'] + " (" +
