@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy.spatial import cKDTree
 from .model import GeometryError, TaskContext, Hold
+from .features import DEFAULT_CONTACT_MARGIN_MM
 
 
 @dataclass
@@ -29,7 +30,8 @@ class ScreeningSummary:
                 f"{self.rejected_geometry} could not form a clean shape.")
 
 
-def suggest_holds(revision, up, minimum_size=50., maximum_size=300., sensitivity=50., context=None, round_boundary=True):
+def suggest_holds(revision, up, minimum_size=50., maximum_size=300., sensitivity=50., context=None, round_boundary=True,
+                  contact_margin_mm=DEFAULT_CONTACT_MARGIN_MM):
     """Screen the actual retained surface, separately from solid validity."""
     from .geometry import prepare_hold
     from .features import protrusion_hold
@@ -42,7 +44,8 @@ def suggest_holds(revision, up, minimum_size=50., maximum_size=300., sensitivity
         try:
             if candidate.feature_patch is not None:
                 candidate.prepared_hold = protrusion_hold(revision, candidate.feature_patch, candidate.reference,
-                                                         context=ctx, kind=candidate.feature_kind, allow_incomplete=True)
+                                                         context=ctx, kind=candidate.feature_kind, allow_incomplete=True,
+                                                         contact_margin_mm=contact_margin_mm)
                 candidate.faces = candidate.prepared_hold.face_indices
             else:
                 candidate.prepared_hold = prepare_hold(revision, candidate.faces, context=ctx,

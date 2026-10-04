@@ -1,14 +1,14 @@
-# Extracting the natural feature in Rockform 0.1.7
+# Extracting the natural feature in Rockform 0.1.8
 
 1. Import the Scaniverse OBJ and confirm scale. **Automatically reduce dense, low-detail areas** is enabled initially; uncheck it to retain every triangle. The full-resolution original remains available with Undo or Reset scan.
 2. In **1 Repair**, click **Paint area of interest** and RIGHT-drag over useful rock. Violet marks the selection. Include surrounding wall; the default **20 mm margin** adds context. Click **Preview selected area**, inspect coral excluded geometry, then **Apply selected area**. You can also use the entire current scan. Next, preview repair and apply it after inspection; excluded regions are not repaired.
 2. Open **2 Holds**, keep **Isolate natural feature** checked, and click **Suggest holds**.
-3. Select the raised feature and click **Preview hold from selection**. This scan produces a roughly **135 × 94 × 38 mm** feature, with **0 mm added backing and no surrounding plate**.
-4. Inspect the green scanned surface. Only its underside is closed; the oversized amber skirt is absent. Shape settings can edit the preview before **Keep hold**.
-5. In **3 Mounts**, choose bolt-on or screw-on and generate mounts. Both default profiles geometrically fit this example without added backing. Match them to your hardware, inspect the drilled preview and cutaway, then export STL in millimeters.
+3. Select the raised feature and click **Preview hold from selection**. **Surrounding rock** defaults to **10 mm**, retaining texture around the base for fingers wrapping around it. Adjust it before previewing or re-extracting; set **0 mm** for the previous root-only shape.
+4. Inspect the green scanned contact surface and amber support. A 3 mm backing under the lowest retained point and a shallow outer return close the default shape. Check the displayed dimensions, then **Keep hold**.
+5. In **3 Mounts**, choose bolt-on or screw-on and generate mounts. Match the profiles to your hardware, inspect the drilled preview and cutaway, then export STL in millimeters.
 6. **Save project** includes unfinished previews, area selections and margins, crop-edge exclusions, settings and the current view. Use **Open project** to continue where you left off. Saving does not accept a preview. New files use format 8 and require Rockform 0.1.7 or later.
 
-The app fits the surrounding wall and follows the protrusion's intersection with a plane just above it. A small allowance excludes scan noise; this example uses 1 mm. Retained triangles remain on the source surface.
+The app fits the surrounding wall and identifies the protrusion's root with a small allowance for scan noise. It then retains the original scan within the chosen margin around that root, including low rock below the allowance and overhanging parts of the feature. Retained triangles remain on the source surface. If the margin reaches missing scan data, repair or rescan that area, or reduce the margin.
 
 A **recess into the wall** keeps its inward shape. Supporting material is added beneath and around that cavity; its mouth is not filled and its shape is not inverted. Added support appears in amber. Deep pockets can need a broad base to return gradually to the mounting wall; check the full preview dimensions before printing. In 0.1.6, that necessary support is no longer rejected by the width rule intended for raised features.
 

@@ -19,8 +19,8 @@ def wall_with_feature(kind='protrusion', resolution=31):
     return mesh
 
 
-def isolated(mesh):
-    candidates, summary = suggest_holds(Revision(mesh), [0, 1, 0])
+def isolated(mesh, contact_margin_mm=0.):
+    candidates, summary = suggest_holds(Revision(mesh), [0, 1, 0], contact_margin_mm=contact_margin_mm)
     assert len(candidates) == 1, summary
     return candidates[0].prepared_hold
 
@@ -51,7 +51,7 @@ def test_wall_plane_ignores_protrusion_and_is_rotation_equivariant():
     moved = source.copy()
     moved.apply_transform(rotation)
     up = rotation[:3, :3] @ [0., 1., 0.]
-    candidates, summary = suggest_holds(Revision(moved), up)
+    candidates, summary = suggest_holds(Revision(moved), up, contact_margin_mm=0.)
     assert len(candidates) == 1, summary
     second = candidates[0].prepared_hold
     assert second.backing == 0.
@@ -104,7 +104,7 @@ def test_small_painted_seed_expands_to_feature_not_a_rectangular_plate():
     mesh = wall_with_feature()
     centers = mesh.triangles_center
     seed = np.flatnonzero((np.abs(centers[:, :2]) < 22.).all(axis=1))
-    hold = prepare_feature(Revision(mesh), seed)
+    hold = prepare_feature(Revision(mesh), seed, contact_margin_mm=0.)
     assert hold.backing == 0.
     assert len(hold.face_indices) > len(seed)
     assert hold.solid.extents[:2].min() > 70.
@@ -134,7 +134,7 @@ def test_two_separate_protrusions_produce_two_natural_outlines():
     x, y = mesh.vertices[:, :2].T
     mesh.vertices[:, 2] = (22 * np.exp(-(((x - 65) / 26) ** 4 + (y / 32) ** 4))
                           + 30 * np.exp(-(((x + 65) / 28) ** 4 + (y / 30) ** 4)))
-    candidates, summary = suggest_holds(Revision(mesh), [0, 1, 0])
+    candidates, summary = suggest_holds(Revision(mesh), [0, 1, 0], contact_margin_mm=0.)
     assert len(candidates) == 2, summary
     for candidate in candidates:
         assert candidate.prepared_hold.backing == 0.
@@ -190,6 +190,7 @@ def test_preview_edits_and_reextraction_keep_saved_design_intact():
     window.show_error = errors.append
     try:
         window.set_project(Project(wall_with_feature(resolution=25), 'Preview fixture'))
+        window.contact_margin.setValue(0.)
         window.selected[:] = True
         window.create_hold()
         wait_for_worker(window)
