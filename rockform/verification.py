@@ -126,7 +126,7 @@ def run_scan(source, destination):
     return 0 if report["passed"] else 1
 
 
-def run_quick_repair(source, destination):
+def run_quick_repair(source, destination, methods=('fill', 'trim', 'fill-trim'), trim_heights=(0.,)):
     """Exercise all explicit repairs on a saved incomplete feature."""
     from hashlib import sha256
     from .quick_repair import quick_repair, original_feature
@@ -146,20 +146,29 @@ def run_quick_repair(source, destination):
                 print(message, flush=True)
                 last_message[0] = message
         context = TaskContext(progress)
-        for method in ('fill', 'trim', 'fill-trim'):
-            print(f'Checking quick repair: {method}', flush=True)
-            # Zero is the UI default and reproduced the reported 50 mm failure.
-            height = 0. if method == 'fill-trim' else None
+        cases = [(method, 0. if method == 'fill-trim' else None) for method in methods]
+        cases.extend(('fill-trim', height) for height in trim_heights if height > 0.)
+        for method, height in cases:
+            name = f'{method}-{height:g}' if height else method
+            print(f'Checking quick repair: {name}', flush=True)
             repaired = quick_repair(feature, method, trim_height=height, up=project.up, context=context)
-            repaired.name = f'Quick repair - {method}'
+            if method in ('fill', 'fill-trim'):
+                world = trimesh.transform_points(repaired.patch.vertices, np.linalg.inv(repaired.frame))
+                local = trimesh.transform_points(world, feature.frame)
+                if not height:
+                    assert np.allclose(local, feature.patch.vertices)
+                else:
+                    assert trimesh.proximity.closest_point(feature.patch, local)[1].max() < 1e-5
+                np.testing.assert_allclose(repaired.solid.extents[2], feature.patch.extents[2] + 3. - (height or 0.), atol=1e-5)
+            repaired.name = f'Quick repair - {name}'
             print(f'Repaired solid: {len(repaired.solid.faces)} triangles', flush=True)
-            result, stl, _ = export_hold(repaired, output/f'{method}.stl', context)
+            result, stl, _ = export_hold(repaired, output/f'{name}.stl', context)
             reimported = trimesh.load_mesh(stl)
             validate_solid(reimported, context)
             assert np.allclose(result.extents, reimported.extents, atol=1e-4)
             assert np.array_equal(original_feature(repaired).patch.vertices, feature.patch.vertices)
             repairs.append(repaired)
-            report['repairs'].append(dict(method=method, dimensions_mm=result.extents.tolist(),
+            report['repairs'].append(dict(method=method, trim_up_mm=height, dimensions_mm=result.extents.tolist(),
                                          watertight=True, metadata=repaired.extraction['quick_repair']))
         project.holds = [repairs[-1], *repairs[:-1], feature]
         project.workspace = {}
@@ -216,7 +225,9 @@ def check_native_view(output, project, tab=2):
         repair = project.holds[0].extraction.get('quick_repair', {})
         if repair.get('method') == 'fill-trim':
             assert window.quick_method.currentText() == 'Fill then trim'
-            assert window.trim_height.value() == repair['trim_height_above_wall_mm']
+            from .quick_repair import repair_trim_height
+            assert window.trim_height.value() == repair_trim_height(project.holds[0], combined=True)
+            assert window.trim_label.text() == 'Trim up from filled back'
             assert window.trim_height.isEnabled() and window.auto_trim.isHidden()
     project.workspace = {}
     project.pending_hold = None

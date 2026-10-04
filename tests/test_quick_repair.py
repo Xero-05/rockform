@@ -6,7 +6,7 @@ from PySide6 import QtWidgets
 from rockform.model import Project, Revision, Hold, GeometryError, TaskContext, Cancelled, default_profiles
 from rockform.features import feature_regions, protrusion_hold
 from rockform.geometry import build_solid, generated_faces
-from rockform.quick_repair import quick_repair, original_feature, suggested_trim_height, comparison_surface, _connected_fill, _trim_solid
+from rockform.quick_repair import quick_repair, original_feature, suggested_trim_height, comparison_surface, _connected_fill, _trim_solid, _close_back_seams, repair_trim_height
 from rockform.storage import save_project, load_project, export_hold
 from rockform.mounts import generate_mounts, apply_mounts, footprint
 from rockform.app import MainWindow
@@ -69,7 +69,7 @@ def test_combined_repair_closes_damage_above_cut_and_round_trips(tmp_path):
     assert repaired.patch.vertices[:, 2].min() == pytest.approx(0.)
     assert repaired.solid.extents[2] == pytest.approx(26.)  # 30 - (5 - wall offset 1)
     assert repaired.extraction['quick_repair']['sequence'] == 'fill-then-trim'
-    assert repaired.extraction['quick_repair']['flat_back_above_wall_mm'] == 5.
+    assert repaired.extraction['quick_repair']['trim_height_above_base_mm'] == 5.
     filled = quick_repair(source, 'fill')
     cut = _trim_solid(filled.solid, 5.)
     cut.vertices[:, 2] -= 5.
@@ -119,6 +119,89 @@ def test_fill_removes_enclosed_fragments_and_rejects_exterior_pieces():
     fragment.apply_translation([10, 0, 0])
     with pytest.raises(GeometryError, match='outside the main body'):
         _connected_fill(trimesh.util.concatenate([body, fragment]))
+
+
+@pytest.mark.parametrize('contact_margin', [0., 50.])
+def test_fill_and_zero_trim_keep_low_contact_rock_below_fitted_wall(contact_margin):
+    _, source = uneven_rim_feature()
+    source.patch.vertices[:, 2] -= 52.
+    source.extraction.update(wall_offset_mm=3., contact_margin_mm=contact_margin, contact_margin_complete=False)
+    original = source.patch.vertices.copy()
+    filled = quick_repair(source, 'fill')
+    combined = quick_repair(source, 'fill-trim', trim_height=0.)
+    for repaired in (filled, combined):
+        assert repaired.solid.is_volume
+        assert repaired.solid.bounds[0, 2] == pytest.approx(0.)
+        assert repaired.patch.bounds[0, 2] == pytest.approx(3.)
+        assert repaired.solid.extents[2] == pytest.approx(source.patch.extents[2] + 3.)
+        world = trimesh.transform_points(repaired.patch.vertices, np.linalg.inv(repaired.frame))
+        assert np.allclose(world, original)
+        assert repaired.extraction['contact_margin_mm'] == contact_margin
+    assert combined.solid.volume == pytest.approx(filled.solid.volume)
+    assert combined.extraction['quick_repair']['trim_height_above_base_mm'] == 0.
+    assert combined.extraction['quick_repair']['separated_offcuts'] == 0
+    # Trim distance uses the filled bottom even when the fitted wall is above
+    # the entire feature; it no longer discards low rock at the default value.
+    trimmed = quick_repair(source, 'fill-trim', trim_height=5.)
+    assert trimmed.patch.area < source.patch.area
+    assert trimmed.solid.extents[2] == pytest.approx(filled.solid.extents[2] - 5.)
+    assert np.array_equal(source.patch.vertices, original)
+
+
+def test_back_seam_repair_closes_generated_back_without_capping_front_damage():
+    box = trimesh.creation.box(extents=[10., 10., 10.])
+    box.vertices[:, 2] += 5.
+    for plane, closed in ((0., True), (10., False)):
+        mesh = box.copy()
+        face = np.flatnonzero((mesh.triangles[:, :, 2] == plane).all(axis=1))[0]
+        mesh.update_faces(np.arange(len(mesh.faces)) != face)
+        _close_back_seams(mesh)
+        assert mesh.is_watertight == closed
+        if closed:
+            assert mesh.is_volume and mesh.volume == pytest.approx(box.volume)
+
+
+def test_legacy_wall_relative_repair_displays_same_cut_above_filled_bottom():
+    _, source = uneven_rim_feature()
+    source.patch.vertices[:, 2] -= 52.
+    source.extraction['wall_offset_mm'] = 3.
+    legacy = deepcopy(source)
+    legacy.repair_source = source
+    legacy.extraction['quick_repair'] = dict(method='fill-trim', trim_height_above_wall_mm=0.)
+    assert repair_trim_height(legacy, combined=True) == 50.
+    assert repair_trim_height(source, combined=True) == 0.
+
+
+def test_legacy_workspace_cut_converts_once_and_reopens(tmp_path):
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    window = MainWindow()
+    try:
+        project, source = uneven_rim_feature()
+        source.patch.vertices[1:, 2] -= 52.
+        source.extraction['wall_offset_mm'] = 3.
+        repaired = quick_repair(source, 'fill-trim', trim_height=50.)
+        repair = repaired.extraction['quick_repair']
+        repair.pop('trim_height_above_base_mm')
+        repair.pop('trim_reference')
+        project.holds = [repaired]
+        window.set_project(project)
+        window.select_hold(0)
+        assert window.trim_height.value() == 50.
+        window.capture_workspace()
+        project.workspace.pop('quick_trim_reference')
+        project.workspace['controls']['trim_height'] = 0.
+        path = tmp_path / 'legacy-cut.rockform'
+        save_project(project, path)
+        window.set_project(load_project(path))
+        assert window.trim_height.value() == 50.
+        window.capture_workspace()
+        save_project(window.project, path)
+        window.set_project(load_project(path))
+        assert window.trim_height.value() == 50.
+        assert window.trim_label.text() == 'Trim up from filled back'
+    finally:
+        window.dirty = False
+        window.close()
 
 
 def test_filled_cut_body_survives_shape_edits_and_uses_new_project_format(tmp_path):
@@ -221,7 +304,7 @@ def test_repair_is_closed_reversible_and_round_trips(method, tmp_path):
     assert trimesh.proximity.closest_point(project.current.mesh, world)[1].max() < 1e-6
     if method == 'fill':
         assert generated_faces(repaired).any()
-        assert repaired.solid.extents[2] == pytest.approx(source.patch.bounds[1, 2] + source.extraction['wall_offset_mm'])
+        assert repaired.solid.extents[2] == pytest.approx(source.patch.extents[2] + 3.)
     else:
         assert repaired.solid.extents[2] < source.patch.extents[2]
         assert not generated_faces(repaired).any()
