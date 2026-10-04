@@ -1,4 +1,4 @@
-# Extracting the natural feature in Rockform 0.1.11
+# Extracting the natural feature in Rockform 0.1.12
 
 1. Import the Scaniverse OBJ and confirm scale. **Automatically reduce dense, low-detail areas** is enabled initially; uncheck it to retain every triangle. The full-resolution original remains available with Undo or Reset scan.
 2. In **1 Repair**, click **Paint area of interest** and RIGHT-drag over useful rock. Violet marks the selection. Include surrounding wall; the default **20 mm margin** adds context. Click **Preview selected area**, inspect coral excluded geometry, then **Apply selected area**. You can also use the entire current scan. Next, preview repair and apply it after inspection; excluded regions are not repaired.
@@ -21,7 +21,7 @@ For an existing large-plate design, select it and choose **Re-extract natural fe
 ## Quick repair for a broken raised feature
 
 1. Select or preview the **Needs repair** feature, then find **Quick repair** in **2 Holds**.
-2. Choose **Fill then trim**. The original feature is filled first, then the completed solid is cut at **Trim height above wall** in millimeters. Start at 0 mm and raise it until the unwanted lower rock is removed. This plane becomes the flat back.
+2. Choose **Fill then trim**. The back starts **3 mm below the lowest scanned point**. **Trim up from filled back** measures how far upward to cut the completed solid. **0 mm** keeps the full fill and scanned patch. Raise the distance until the unwanted lower rock is removed. This plane becomes the flat back.
 3. Click **Preview quick repair**. The main body is kept if the cut separates offcuts; the preview reports them. Compare with the original to inspect removed rock. **Fill down to wall** and **Trim damaged base** are also available. Trim-only height is automatic initially; disable automatic height to adjust it manually.
 4. Inspect amber added material. **Show original feature in coral** overlays the unrepaired surface, including material removed by trimming.
 5. Click **Keep hold** when satisfied. Switch methods or lower the cut to revise the repair from its original surface, or choose **Restore original feature**. Save/reopen retains the original and unfinished repair preview.

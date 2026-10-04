@@ -1,7 +1,7 @@
-ROCKFORM 0.1.11 - WINDOWS PROTOTYPE
+ROCKFORM 0.1.12 - WINDOWS PROTOTYPE
 
 START THE APP
-1. Obtain Rockform-0.1.11-Windows-x64.zip.
+1. Obtain Rockform-0.1.12-Windows-x64.zip.
 2. Use Extract All to unpack the entire ZIP.
 3. Open the extracted folder and double-click Rockform.exe.
 
@@ -26,13 +26,13 @@ Export STL for your slicer in millimeters. Save project to keep editable work.
 The Guide button explains the workflow. Right-drag paints with a selected brush;
 left-drag rotates the view and the mouse wheel zooms.
 
-NEW IN 0.1.11
-Quick repair now offers Fill then trim. Fill the original feature first, then
-cut the completed solid at one height above the fitted wall. This plane becomes
-the flat back. Start at 0 mm and raise it to remove unwanted lower extensions.
+NEW IN 0.1.12
+Fill puts the flat back 3 mm below the lowest scanned point. Fill then trim
+measures upward from that filled back. Zero keeps the full fill and scanned
+surface; raise Trim up from filled back to remove unwanted lower extensions.
 The main body is kept if trimming separates offcuts; compare the original in
 coral to inspect removed rock. Protected grip detail cannot be removed.
-Fill also handles enclosed union fragments without rejecting the valid body.
+Fill closes numerical seams in its generated back without capping scan damage.
 Lowering the height restores previously cut rock. Filling can cover undercuts.
 
 SURROUNDING ROCK

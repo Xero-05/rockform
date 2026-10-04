@@ -19,7 +19,7 @@ from .preprocessing import adaptive_decimate, crop_interest
 from .detection import suggest_holds
 from .grip import assess_grip, review_text
 from .features import prepare_feature, DEFAULT_CONTACT_MARGIN_MM
-from .quick_repair import quick_repair, original_feature, suggested_trim_height, comparison_surface
+from .quick_repair import quick_repair, original_feature, suggested_trim_height, comparison_surface, repair_trim_height, fill_base_shift
 from .mounts import generate_mounts, apply_mounts, validate_mounts
 from .storage import import_scan, save_project, load_project, export_hold
 from .widgets import STYLE, label, button, number, ProfileDialog, Worker
@@ -93,6 +93,7 @@ class MainWindow(QtWidgets.QMainWindow):
             inspected_gaps=bool(self.gap_list.count()),
             checked_gaps=[self.gap_list.item(i).data(QtCore.Qt.UserRole) for i in range(self.gap_list.count())
                           if self.gap_list.item(i).checkState() == QtCore.Qt.Checked])
+        self.project.workspace['quick_trim_reference'] = 'filled-base'
         self.project.pending_hold = self.hold_preview
         self.project.pending_cleanup = self.preview
 
@@ -135,6 +136,15 @@ class MainWindow(QtWidgets.QMainWindow):
             else:
                 widget.setValue(value)
             del blocker
+        target = self.hold_preview if state.get('view') == 'Hold preview' and self.hold_preview is not None else self.hold
+        if (target is not None and self.quick_method.currentIndex() == 2
+                and state.get('quick_trim_reference') != 'filled-base'
+                and 'trim_height' in state.get('controls', {})
+                and target.extraction.get('quick_repair', {}).get('method') in ('trim-fill', 'fill-trim')
+                and 'trim_height_above_base_mm' not in target.extraction['quick_repair']):
+            source = target.repair_source if target.repair_source is not None else target
+            self.trim_height.setValue(max(0., self.trim_height.value() + fill_base_shift(source)
+                                          - float(source.extraction.get('wall_offset_mm', 0.))))
         self.contact_margin.setEnabled(self.prepare_boundary.isChecked())
         self.update_profile_summary()
         self.mount_list.setCurrentRow(state.get("mount_row", -1))
@@ -409,7 +419,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.auto_trim.setChecked(True)
         layout.addWidget(self.auto_trim)
         self.trim_height = number(0, 0, 1000)
-        self.trim_height.setToolTip("Cut height above the fitted wall, in original scan millimeters. Fill then trim uses your chosen height as the flat back; Trim damaged base also offers automatic height.")
+        self.trim_height.setToolTip("Fill then trim: distance upward from the filled back, 3 mm below the lowest scan point. Zero keeps the full fill. Trim damaged base: height above the fitted wall.")
         trim_form = QtWidgets.QFormLayout()
         self.trim_label = QtWidgets.QLabel("Trim height above wall")
         trim_form.addRow(self.trim_label, self.trim_height)
@@ -423,7 +433,7 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.compare_repair)
         self.quick_method.currentIndexChanged.connect(self.repair_method_changed)
         self.auto_trim.toggled.connect(self.update_quick_controls)
-        layout.addWidget(label("Fill then trim: fill the original first, then cut the solid at your chosen height. Preview, compare, then Keep hold. Fill can cover undercuts; the original stays saved. Raised features only."))
+        layout.addWidget(label("Fill then trim: fill 3 mm below the lowest scan point, then trim upward from that back. Zero keeps the full fill. Preview, compare, then Keep hold. Fill can cover undercuts; the original stays saved. Raised features only."))
         self.hold_preview_text = label("Preview a shape, then Keep hold to add it to your library.")
         layout.addWidget(self.hold_preview_text)
         preview_row = QtWidgets.QHBoxLayout()
@@ -1191,8 +1201,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.quick_method.setCurrentIndex(2 if repair['method'] in ('trim-fill', 'fill-trim') else ('fill', 'trim').index(repair['method']))
                 del blocker
             try:
-                self.trim_height.setValue(repair['trim_height_above_wall_mm'] if 'trim_height_above_wall_mm' in repair else
-                                          0. if self.quick_method.currentIndex() == 2 else suggested_trim_height(hold))
+                self.trim_height.setValue(repair_trim_height(hold, self.quick_method.currentIndex() == 2))
             except GeometryError:
                 pass
 
@@ -1201,7 +1210,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if target is not None:
             repair = target.extraction.get('quick_repair', {})
             if self.quick_method.currentIndex() == 2:
-                self.trim_height.setValue(repair.get('trim_height_above_wall_mm', 0.))
+                self.trim_height.setValue(repair_trim_height(target, combined=True))
             elif self.quick_method.currentIndex() == 1 and self.auto_trim.isChecked():
                 try:
                     self.trim_height.setValue(suggested_trim_height(target))
@@ -1223,6 +1232,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.compare_repair.setEnabled(target is not None and target.repair_source is not None)
         trimming = self.quick_method.currentIndex() in (1, 2)
         combined = self.quick_method.currentIndex() == 2
+        self.trim_label.setText("Trim up from filled back" if combined else "Trim height above wall")
         self.auto_trim.setVisible(trimming and not combined)
         self.trim_label.setVisible(trimming)
         self.trim_height.setVisible(trimming)
@@ -1242,7 +1252,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.dirty = True
             self.shape_fields(hold)
             if method in ("trim", "fill-trim"):
-                self.trim_height.setValue(hold.extraction["quick_repair"]["trim_height_above_wall_mm"])
+                self.trim_height.setValue(repair_trim_height(hold, method == 'fill-trim'))
             self.hold_preview_text.setText(hold.preparation + "\n" + review_text(hold))
             self.view_mode.setCurrentText("Hold preview")
             self.refresh(reset_camera=True)
