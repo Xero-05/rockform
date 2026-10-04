@@ -129,7 +129,7 @@ def run_scan(source, destination):
 def run_quick_repair(source, destination):
     """Exercise all explicit repairs on a saved incomplete feature."""
     from hashlib import sha256
-    from .quick_repair import quick_repair, original_feature, suggested_trim_height
+    from .quick_repair import quick_repair, original_feature
     from .geometry import validate_solid
     output = Path(destination)
     output.mkdir(parents=True, exist_ok=True)
@@ -146,10 +146,10 @@ def run_quick_repair(source, destination):
                 print(message, flush=True)
                 last_message[0] = message
         context = TaskContext(progress)
-        for method in ('fill', 'trim', 'trim-fill'):
+        for method in ('fill', 'trim', 'fill-trim'):
             print(f'Checking quick repair: {method}', flush=True)
-            # Exercise a combined cut below the height that clears all damage.
-            height = round(suggested_trim_height(feature) * .5, 2) if method == 'trim-fill' else None
+            # Zero is the UI default and reproduced the reported 50 mm failure.
+            height = 0. if method == 'fill-trim' else None
             repaired = quick_repair(feature, method, trim_height=height, up=project.up, context=context)
             repaired.name = f'Quick repair - {method}'
             print(f'Repaired solid: {len(repaired.solid.faces)} triangles', flush=True)
@@ -214,8 +214,8 @@ def check_native_view(output, project, tab=2):
         assert window.selected.any()
         assert window.tabs.currentIndex() == saved_tab
         repair = project.holds[0].extraction.get('quick_repair', {})
-        if repair.get('method') == 'trim-fill':
-            assert window.quick_method.currentText() == 'Trim then fill'
+        if repair.get('method') == 'fill-trim':
+            assert window.quick_method.currentText() == 'Fill then trim'
             assert window.trim_height.value() == repair['trim_height_above_wall_mm']
             assert window.trim_height.isEnabled() and window.auto_trim.isHidden()
     project.workspace = {}

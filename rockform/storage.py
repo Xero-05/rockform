@@ -82,7 +82,7 @@ def _hold_write(archive, hold, prefix):
     record.update(mesh=key, mounts=[asdict(m) for m in hold.mounts])
     if hold.repair_source is not None:
         record["repair_source"] = _hold_write(archive, hold.repair_source, f"{prefix}-repair-source")
-    for attribute in ("solid", "result"):
+    for attribute in ("solid", "result", "repair_body"):
         mesh = getattr(hold, attribute)
         if mesh is not None:
             _mesh_write(archive, f"{prefix}-{attribute}.npz", mesh)
@@ -104,7 +104,7 @@ def _hold_read(archive, record):
     hold = Hold(patch=patch, mounts=mounts, **arrays, **record)
     if repair_source is not None:
         hold.repair_source = _hold_read(archive, repair_source)
-    for attribute in ("solid", "result"):
+    for attribute in ("solid", "result", "repair_body"):
         mesh_key = f"{key[:-4]}-{attribute}.npz"
         if mesh_key in archive.namelist():
             setattr(hold, attribute, _mesh_read(archive, mesh_key)[0])
@@ -114,7 +114,10 @@ def _hold_read(archive, record):
 def save_project(project, path, context=None):
     ctx = context or TaskContext()
     destination = Path(path)
-    data = dict(version=8, source_name=project.source_name, scale_factor=project.scale_factor, source_units=project.source_units,
+    def has_repair_body(hold):
+        return hold is not None and (hold.repair_body is not None or has_repair_body(hold.repair_source))
+    version = 9 if any(has_repair_body(h) for h in [*project.holds, project.pending_hold]) else 8
+    data = dict(version=version, source_name=project.source_name, scale_factor=project.scale_factor, source_units=project.source_units,
                 up=project.up.tolist(), cursor=project.cursor,
                 profiles={k: asdict(v) for k, v in project.profiles.items()}, revisions=[], archived=[], holds=[],
                 workspace=project.workspace)
@@ -162,7 +165,7 @@ def load_project(path, context=None):
         if sum(i.file_size for i in archive.infolist()) > 2_000_000_000:
             raise GeometryError("This project expands beyond the 2 GB project limit.")
         data = json.loads(archive.read("project.json"))
-        if data.get("version") not in (1, 2, 3, 4, 5, 6, 7, 8):
+        if data.get("version") not in (1, 2, 3, 4, 5, 6, 7, 8, 9):
             raise GeometryError("Unsupported project version.")
         original, _ = _mesh_read(archive, "original.npz")
         def revisions(kind):

@@ -5,7 +5,7 @@ import numpy as np
 import trimesh
 import manifold3d as manifold
 from .model import GeometryError, TaskContext
-from .geometry import build_solid, _weld_cut_seams, oriented_patch, boundary_loops
+from .geometry import build_solid, _weld_cut_seams, oriented_patch, boundary_loops, validate_solid
 
 
 def original_feature(hold):
@@ -82,15 +82,7 @@ def project_to_back(patch, context=None):
     solid.update_faces(solid.nondegenerate_faces())
     solid.remove_unreferenced_vertices()
     _stitch_base_seams(solid)
-    # Discard only sub-0.01 mm³ numerical slivers, not disconnected rock pieces.
-    components = trimesh.graph.connected_components(solid.face_adjacency, nodes=np.arange(len(solid.faces)), min_len=1)
-    if len(components) > 1:
-        pieces = [solid.submesh([ids], append=True, repair=False) for ids in components]
-        largest = max(pieces, key=lambda part: abs(part.volume))
-        discarded = [part for part in pieces if part is not largest]
-        if sum(abs(part.volume) for part in discarded) > .01:
-            raise GeometryError("The fill leaves separate pieces. Select one feature or trim farther above the damaged boundary.")
-        solid = largest
+    solid = _connected_fill(solid, ctx)
     # Once seams share topology, collapse coplanar subdivisions of the base.
     # This avoids spending minutes checking redundant triangles on one plane.
     if solid.is_watertight:
@@ -99,6 +91,72 @@ def project_to_back(patch, context=None):
             output = compact.to_mesh64()
             solid = trimesh.Trimesh(output.vert_properties[:, :3], output.tri_verts, process=False)
     return solid
+
+
+def _connected_fill(solid, context=None):
+    """Remove union sheets and fully enclosed fragments, never exterior rock."""
+    ctx = context or TaskContext()
+    components = trimesh.graph.connected_components(solid.face_adjacency, nodes=np.arange(len(solid.faces)), min_len=1)
+    if len(components) == 1:
+        return solid
+    pieces = [solid.submesh([ids], append=True, repair=False) for ids in components]
+    # Compute just signed volume; zero-thickness union sheets have no centroid.
+    volumes = []
+    for part in pieces:
+        triangles = part.triangles - part.vertices[0]
+        volumes.append(abs(np.einsum('ij,ij->i', triangles[:, 0],
+                                    np.cross(triangles[:, 1], triangles[:, 2])).sum() / 6.))
+    main = int(np.argmax(volumes))
+    largest = pieces[main]
+    body = None
+    outside_volume = 0.
+    for index, (part, volume) in enumerate(zip(pieces, volumes)):
+        if index == main:
+            continue
+        ctx.step(68, "Removing enclosed fill fragments…")
+        if volume > .01 and part.is_watertight and largest.is_volume:
+            if body is None:
+                body = manifold.Manifold(manifold.Mesh64(np.array(largest.vertices, copy=True, order='C'), np.array(largest.faces, dtype=np.uint64, copy=True, order='C')))
+            fragment = manifold.Manifold(manifold.Mesh64(np.array(part.vertices, copy=True, order='C'), np.array(part.faces, dtype=np.uint64, copy=True, order='C')))
+            remainder = fragment - body
+            if (body.status() == manifold.Error.NoError and remainder.status() == manifold.Error.NoError
+                    and remainder.is_empty()):
+                # The fragment is wholly inside existing material. Removing it
+                # changes neither the exterior contact surface nor the volume.
+                continue
+        outside_volume += volume
+    if outside_volume > .01:
+        raise GeometryError("The fill leaves separate pieces outside the main body. Select one connected feature or repair the source scan.")
+    return largest
+
+
+def _trim_solid(solid, height):
+    # The native constructor requires writable C arrays; union output exposes
+    # read-only views even when they are already contiguous.
+    body = manifold.Manifold(manifold.Mesh64(np.array(solid.vertices, copy=True, order='C'),
+                                          np.array(solid.faces, dtype=np.uint64, copy=True, order='C')))
+    cut = body.trim_by_plane([0., 0., 1.], float(height))
+    if cut.status() != manifold.Error.NoError or cut.is_empty():
+        raise GeometryError("The filled solid could not be trimmed at that height. Lower the cut.")
+    mesh = cut.to_mesh64()
+    return trimesh.Trimesh(np.array(mesh.vert_properties[:, :3], copy=True),
+                           np.array(mesh.tri_verts, copy=True), process=False)
+
+
+def rebuild_filled_body(hold, patch, context=None):
+    """Rebuild from the filled-and-cut body, rather than filling a cut scan."""
+    body = hold.repair_body.copy()
+    body.vertices *= hold.scale
+    rotation = trimesh.transformations.euler_matrix(np.radians(hold.tilt_x), np.radians(hold.tilt_y), 0)
+    body.apply_transform(rotation)
+    raw_point = trimesh.transform_points(hold.patch.vertices[:1] * hold.scale, rotation)[0]
+    body.vertices[:, 2] += patch.vertices[0, 2] - raw_point[2]
+    if hold.tilt_x or hold.tilt_y or hold.backing:
+        # Shape edits retain the filled body and return it to a flat mounting
+        # plane. The original cut is already represented by this saved mesh.
+        body = _trim_solid(body, 0.)
+        body = project_to_back(body, context)
+    return body
 
 
 def _stitch_base_seams(solid):
@@ -144,12 +202,15 @@ def quick_repair(hold, method="fill", trim_height=None, up=None, context=None):
         raise GeometryError("Quick base repair currently works on raised features. Use scan gap repair for recesses to preserve their cavity.")
     if source.solid is not None:
         raise GeometryError("Select an incomplete raised feature for quick repair.")
-    if method not in ("fill", "trim", "trim-fill"):
-        raise GeometryError("Choose Fill down to wall, Trim damaged base, or Trim then fill.")
+    if method == "trim-fill":
+        method = "fill-trim"  # Accept the previous API spelling for new previews.
+    if method not in ("fill", "trim", "fill-trim"):
+        raise GeometryError("Choose Fill down to wall, Trim damaged base, or Fill then trim.")
     repaired = deepcopy(source)
     repaired.id = uuid.uuid4().hex
     repaired.repair_source = source
     repaired.result = repaired.solid = None
+    repaired.repair_body = None
     repaired.extraction.pop("geometry_status", None)
     repaired.extraction.pop("geometry_issue", None)
     repaired.extraction.pop("missing_boundaries", None)
@@ -159,20 +220,16 @@ def quick_repair(hold, method="fill", trim_height=None, up=None, context=None):
     metadata = dict(method=method, source_hold_id=hold.id, inferred=True,
                     numerical_tolerance_mm=.001 if method != "trim" else 0.)
     contact_margin = float(source.extraction.get("contact_margin_mm", 0.))
-    if method in ('trim', 'trim-fill'):
+    if method in ('trim', 'fill-trim'):
         height = (suggested_trim_height(source) if method == 'trim' else 0.) if trim_height is None else float(trim_height)
         if not np.isfinite(height) or height < 0:
             raise GeometryError("Enter a finite, nonnegative trim height above the fitted wall.")
         cut_height = height - offset
         if repaired.patch.bounds[1, 2] - cut_height < 3.:
             raise GeometryError("That cut would leave less than 3 mm of feature height. Lower the cut or use Fill down to wall.")
-        if len(source.protected_triangles) and source.protected_triangles[:, :, 2].min() < cut_height:
+        protected = np.vstack([source.protected_points, source.protected_triangles.reshape(-1, 3)])
+        if len(protected) and protected[:, 2].min() < cut_height:
             raise GeometryError("This cut would remove protected grip detail. Lower the trim plane or change the protected region.")
-        ctx.step(20, "Cutting off the damaged lower portion…")
-        repaired.patch = trimesh.intersections.slice_mesh_plane(repaired.patch, [0,0,1], [0,0,cut_height], cap=False)
-        if not len(repaired.patch.faces):
-            raise GeometryError("No surface remains above this cut. Lower the trim height.")
-        _weld_cut_seams(repaired.patch)
         metadata["trim_height_above_wall_mm"] = height
         if contact_margin:
             repaired.extraction["contact_margin_mm"] = 0.
@@ -180,14 +237,9 @@ def quick_repair(hold, method="fill", trim_height=None, up=None, context=None):
             metadata["removed_contact_margin_mm"] = contact_margin
     if method != "trim":
         repaired.edge_style = "projected-base"
-        # Combined repair fills below the cut, without restoring trimmed rock.
-        # Fill-only also retains contact texture below the fitted wall.
-        if method == 'trim-fill':
-            shift = 3. - cut_height
-            metadata.update(backing_below_trim_mm=3., fill_plane_above_wall_mm=height - 3.)
-        else:
-            shift = max(offset, 3. - float(repaired.patch.vertices[:, 2].min())) if contact_margin else offset
-            metadata["backing_below_wall_mm"] = float(shift - offset)
+        fill_shift = max(offset, 3. - float(source.patch.vertices[:, 2].min())) if contact_margin else offset
+        shift = -cut_height if method == 'fill-trim' else fill_shift
+        metadata["fill_stock_backing_below_wall_mm" if method == 'fill-trim' else "backing_below_wall_mm"] = float(fill_shift - offset)
         repaired.preparation = ("Quick repair: filled straight down to the fitted wall. Amber surfaces are inferred material; "
                                 "undercuts below the observed surface can be filled. No surrounding plate was added. "
                                 "Compare with the original feature before keeping.")
@@ -196,10 +248,10 @@ def quick_repair(hold, method="fill", trim_height=None, up=None, context=None):
                                     "with the flat back at least 3 mm below the lowest retained scan point. "
                                     "Amber is inferred support; undercuts can be filled. Missing contact texture is not added. "
                                     "Compare with the original feature before keeping.")
-        if method == 'trim-fill':
-            repaired.preparation = (f"Quick repair: trimmed the base at {height:.2f} mm above the fitted wall, "
-                                    "then filled remaining open edges down to a flat back 3 mm below the cut. "
-                                    "The remaining scanned surface is retained; amber is inferred support and fill can cover undercuts. "
+        if method == 'fill-trim':
+            metadata.update(sequence="fill-then-trim", flat_back_above_wall_mm=height)
+            repaired.preparation = (f"Quick repair: filled the original feature first, then cut the solid at {height:.2f} mm above the fitted wall. "
+                                    "The cut becomes the flat back. The remaining scanned surface is retained; amber is inferred support and fill can cover undercuts. "
                                     "Compare the original in coral to inspect removed rock before keeping.")
     else:
         repaired.edge_style = "natural-base"
@@ -209,26 +261,59 @@ def quick_repair(hold, method="fill", trim_height=None, up=None, context=None):
                                 "Show the original feature to inspect what was removed before keeping.")
         if contact_margin:
             repaired.preparation += " Trimming removed the surrounding contact margin; the original is saved for comparison."
-    repaired.patch.vertices[:, 2] += shift
-    repaired.frame[2, 3] += shift
-    repaired.protected_points[:, 2] += shift
-    repaired.protected_triangles[:, :, 2] += shift
-    repaired.extraction["quick_repair"] = metadata
     try:
+        if method == 'fill-trim':
+            ctx.step(20, "Filling the original feature before trimming…")
+            stock = source.patch.copy()
+            stock.vertices[:, 2] += fill_shift
+            filled = project_to_back(stock, ctx)
+            validate_solid(filled, ctx)
+            ctx.step(75, "Trimming the filled solid and closing the cut…")
+            plane = cut_height + fill_shift
+            repaired.repair_body = _trim_solid(filled, plane)
+            repaired.repair_body.vertices[:, 2] -= plane
+            parts = repaired.repair_body.split(only_watertight=False)
+            main = max(parts, key=lambda part: abs(part.volume))
+            offcuts = [part for part in parts if part is not main]
+            repaired.repair_body = main
+            metadata.update(separated_offcuts=len(offcuts), offcut_volume_mm3=float(sum(abs(part.volume) for part in offcuts)))
+            if offcuts:
+                repaired.preparation += f" Trimming separated {len(offcuts)} offcut(s); the main body was retained. Compare the original to inspect removed rock."
+        if method in ('trim', 'fill-trim'):
+            repaired.patch = trimesh.intersections.slice_mesh_plane(source.patch, [0,0,1], [0,0,cut_height], cap=False)
+            if not len(repaired.patch.faces):
+                raise GeometryError("No surface remains above this cut. Lower the trim height.")
+            _weld_cut_seams(repaired.patch)
+        repaired.patch.vertices[:, 2] += shift
+        repaired.frame[2, 3] += shift
+        repaired.protected_points[:, 2] += shift
+        repaired.protected_triangles[:, :, 2] += shift
+        repaired.extraction["quick_repair"] = metadata
+        if method == 'fill-trim' and metadata['separated_offcuts']:
+            centers = repaired.patch.triangles_center
+            distance = trimesh.proximity.closest_point(repaired.repair_body, centers)[1]
+            keep = distance <= .001
+            # Scan triangles obscured by fill are still source evidence. Keep
+            # those inside the body, but exclude rock belonging to the offcuts.
+            keep[~keep] = repaired.repair_body.contains(centers[~keep])
+            repaired.patch.update_faces(keep)
+            repaired.patch.remove_unreferenced_vertices()
+            if not len(repaired.patch.faces):
+                raise GeometryError("The cut removed the observed feature. Lower the trim height.")
         if method == "trim":
             loops = boundary_loops(repaired.patch)
             if len(loops) != 1 or np.max(np.abs(repaired.patch.vertices[loops[0], 2])) > 1e-5:
                 raise GeometryError("The cut has not cleared every damaged boundary.")
         repaired.solid = build_solid(repaired, ctx)
     except GeometryError as error:
-        advice = ("Raise the trim height to clear the boundary, or try Trim then fill to close the remaining damaged edges." if method == "trim" else
-                  "Adjust the cut height or repair the source scan." if method == "trim-fill" else
-                  "Try Trim then fill or repair the source scan.")
+        advice = ("Raise the trim height to clear the boundary, or try Fill then trim to close the remaining damaged edges." if method == "trim" else
+                  "Adjust the cut height or repair the source scan." if method == "fill-trim" else
+                  "Try Fill then trim or repair the source scan.")
         raise GeometryError(f"Quick repair could not produce a valid solid. {advice} Detail: {error}") from error
-    if len(repaired.protected_triangles):
-        points = np.vstack([repaired.protected_triangles.reshape(-1, 3), repaired.protected_triangles.mean(axis=1)])
+    if len(repaired.protected_triangles) or len(repaired.protected_points):
+        points = np.vstack([repaired.protected_points, repaired.protected_triangles.reshape(-1, 3), repaired.protected_triangles.mean(axis=1)])
         if trimesh.proximity.closest_point(repaired.solid, points)[1].max() > .001:
-            raise GeometryError("The fill would cover protected grip detail. Try trimming or change the protected region.")
+            raise GeometryError("The repair would remove or cover protected grip detail. Lower the cut or change the protected region.")
     openings = max(0, (2 - repaired.solid.euler_number) // 2)
     metadata["through_openings"] = int(openings)
     if openings:
