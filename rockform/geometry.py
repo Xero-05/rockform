@@ -400,6 +400,11 @@ def _tapered_solid(patch, boundary, polygon, width, ctx, eased=True):
         ctx.step(30 + int(fraction * 25), "Blending the selected rock edge down to the wall…")
         outer = polygon.buffer(width * fraction, quad_segs=3)
         if not eased:
+            # Contact outlines inherit tiny plane-cut slivers. Near-collinear
+            # generated rim points can form back triangles thinner than the
+            # solid's intersection tolerance. Simplify only the added return
+            # by 0.001 mm; every scanned contact vertex remains untouched.
+            outer = outer.simplify(.001, preserve_topology=True)
             # Buffering drops collinear vertices. Without resampling, a single
             # long outer edge fans over multiple boundary peaks and invents
             # steep folds despite a shallow intended ramp.

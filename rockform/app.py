@@ -18,7 +18,7 @@ from .cleanup import CleanupOptions, clean_revision, gap_info
 from .preprocessing import adaptive_decimate, crop_interest
 from .detection import suggest_holds
 from .grip import assess_grip, review_text
-from .features import prepare_feature
+from .features import prepare_feature, DEFAULT_CONTACT_MARGIN_MM
 from .quick_repair import quick_repair, original_feature, suggested_trim_height, comparison_surface
 from .mounts import generate_mounts, apply_mounts, validate_mounts
 from .storage import import_scan, save_project, load_project, export_hold
@@ -66,7 +66,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     _saved_controls = ("repair_check", "cleanup_selected_only", "fragment", "smoothing", "reduction",
                        "auto_fill_gaps", "gap_limit", "feature_min", "feature_max", "sensitivity",
-                       "prepare_boundary", "backing", "edge_flare", "hold_scale", "tilt_x", "tilt_y",
+                       "prepare_boundary", "contact_margin", "backing", "edge_flare", "hold_scale", "tilt_x", "tilt_y",
                        "mount_mode", "anti_rotation", "screw_count", "mount_x", "mount_y", "drag_mounts",
                        "cutaway", "cut_position", "brush_mode", "brush_radius", "compare",
                        "quick_method", "auto_trim", "trim_height", "compare_repair", "interest_margin")
@@ -135,6 +135,7 @@ class MainWindow(QtWidgets.QMainWindow):
             else:
                 widget.setValue(value)
             del blocker
+        self.contact_margin.setEnabled(self.prepare_boundary.isChecked())
         self.update_profile_summary()
         self.mount_list.setCurrentRow(state.get("mount_row", -1))
         # Restore pending coordinate edits after selecting the stored mount row.
@@ -388,8 +389,14 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(label("Choose a suggestion, or RIGHT-drag with Select hold. Needs repair identifies a visible feature with incomplete geometry; inspect the coral boundaries. You can keep it for repair, but mounting and export require a closed solid."))
         self.prepare_boundary = QtWidgets.QCheckBox("Isolate natural feature")
         self.prepare_boundary.setChecked(True)
-        self.prepare_boundary.setToolTip("Use the painted area to identify a protrusion or recess, then trace its root at the surrounding wall. Protrusions get no added plate. Turn off only to build a backed surface patch from the painted outline.")
+        self.prepare_boundary.setToolTip("Use the painted area to identify a protrusion or recess, then follow its natural root. Raised features also retain the chosen surrounding rock margin. Turn off to build a backed surface patch from the painted outline.")
         layout.addWidget(self.prepare_boundary)
+        self.contact_margin = number(DEFAULT_CONTACT_MARGIN_MM, 0, 50)
+        self.contact_margin.setToolTip("Scanned rock retained around a raised feature for fingers wrapping around its base, in original scan millimeters. Set 0 to close at the root. Change this before previewing or re-extracting; existing holds keep their saved geometry.")
+        contact_form = QtWidgets.QFormLayout()
+        contact_form.addRow("Surrounding rock", self.contact_margin)
+        layout.addLayout(contact_form)
+        self.prepare_boundary.toggled.connect(self.contact_margin.setEnabled)
         layout.addWidget(button("Preview hold from selection", self.create_hold, True))
         layout.addWidget(label("Quick repair", "section"))
         self.quick_method = QtWidgets.QComboBox()
@@ -439,7 +446,7 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addLayout(form)
         layout.addWidget(button("Rebuild preview / selected hold", self.rebuild_hold))
         layout.addWidget(button("Re-extract natural feature", self.use_tapered_defaults))
-        layout.addWidget(label("Raised features close at their natural root with 0 mm added backing and no surrounding plate. Recesses need material beneath and around the cavity. Green is scanned rock; amber is added material. Re-extract natural feature creates a new preview and keeps the old design intact."))
+        layout.addWidget(label("Raised features retain the chosen surrounding rock for contact around the base, with thin backing and a gradual outer return. Set Surrounding rock to 0 for root-only extraction. Recesses need support beneath and around the cavity. Green is scanned rock; amber is added material. Re-extract natural feature creates a new preview and keeps the old design intact."))
         layout.addStretch()
 
     def _mount_tab(self):
@@ -1064,8 +1071,10 @@ class MainWindow(QtWidgets.QMainWindow):
         minimum, maximum, sensitivity = self.feature_min.value(), self.feature_max.value(), self.sensitivity.value()
         revision, up = self.project.current, self.project.up.copy()
         round_boundary = self.prepare_boundary.isChecked()
+        contact_margin = self.contact_margin.value()
         def operation(ctx):
-            return suggest_holds(revision, up, minimum, maximum, sensitivity, ctx, round_boundary)
+            return suggest_holds(revision, up, minimum, maximum, sensitivity, ctx, round_boundary,
+                                 contact_margin_mm=contact_margin)
         self.run_job("Looking for broad grip features…",
             operation, ready)
 
@@ -1097,7 +1106,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.refresh(reset_camera=True)
             QtCore.QTimer.singleShot(0, lambda: self.tabs.widget(1).ensureWidgetVisible(self.keep_hold_button))
         round_boundary = self.prepare_boundary.isChecked()
+        contact_margin = self.contact_margin.value()
         cached = next((c.prepared_hold for c in self.candidates if c.prepared_hold is not None and
+                       c.prepared_hold.extraction.get("requested_contact_margin_mm", 0.) == contact_margin and
                        c.prepared_hold.revision_id == self.project.current.id and np.array_equal(np.sort(c.faces), faces)), None)
         if cached is not None and round_boundary:
             cached = deepcopy(cached)
@@ -1106,7 +1117,8 @@ class MainWindow(QtWidgets.QMainWindow):
             ready(cached)
             return
         def operation(ctx):
-            hold = (prepare_feature(self.project.current, faces, name, ctx, allow_incomplete=True) if round_boundary else
+            hold = (prepare_feature(self.project.current, faces, name, ctx, allow_incomplete=True,
+                                    contact_margin_mm=contact_margin) if round_boundary else
                     prepare_hold(self.project.current, faces, name, ctx, round_boundary=False))
             hold.grip_review = assess_grip(hold, self.project.up, ctx)
             return hold

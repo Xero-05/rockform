@@ -1,7 +1,7 @@
-ROCKFORM 0.1.7 - WINDOWS PROTOTYPE
+ROCKFORM 0.1.8 - WINDOWS PROTOTYPE
 
 START THE APP
-1. Obtain Rockform-0.1.7-Windows-x64.zip.
+1. Obtain Rockform-0.1.8-Windows-x64.zip.
 2. Use Extract All to unpack the entire ZIP.
 3. Open the extracted folder and double-click Rockform.exe.
 
@@ -26,7 +26,17 @@ Export STL for your slicer in millimeters. Save project to keep editable work.
 The Guide button explains the workflow. Right-drag paints with a selected brush;
 left-drag rotates the view and the mouse wheel zooms.
 
-NEW IN 0.1.7
+NEW IN 0.1.8
+Raised holds retain 10 mm of surrounding scanned rock for fingers wrapping
+around the base. In 2 Holds, adjust Surrounding rock from 0 to 50 mm before
+suggesting or previewing. Retained texture, overhangs, and grip surfaces stay on
+the working scan. A 3 mm backing and shallow outside return close the shape.
+Set 0 mm for the previous root-only extraction with no added backing.
+For an existing hold, Re-extract natural feature makes a new preview while
+keeping the saved design and its holes. Recess extraction is unchanged.
+If the margin reaches missing scan data, repair/rescan or reduce the margin.
+
+IMPORT AND AREA SELECTION
 Import defaults to reducing dense, low-detail areas after scale confirmation.
 The original stays intact; Undo or Reset restores it. Uncheck the import option
 to retain every triangle. Import does not smooth or repair gaps.
@@ -46,9 +56,9 @@ scan gap repair to preserve their cavity. Missing front patches may need a resca
 Projects keep previews, selections, settings and the saved view. New saves use
 format 8 and require Rockform 0.1.7 or later; older projects remain readable.
 
-The supplied Scaniverse scan now yields a roughly 135 x 94 x 38 mm natural feature.
-Both default mounting modes fit geometrically without adding backing. Match the
-editable prototype profiles to your actual hardware before printing.
+A reference Scaniverse scan yields a roughly 171 x 130 x 42 mm raised hold with
+the default contact margin. Match the editable prototype profiles to your
+actual hardware before printing.
 
 TESTING STATUS
 Tested on the development Windows 11 x64 computer, including the standalone

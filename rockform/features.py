@@ -7,6 +7,107 @@ from .model import GeometryError, TaskContext, Hold
 from .geometry import frame_for_patch, boundary_loops, _weld_cut_seams, build_solid
 
 
+DEFAULT_CONTACT_MARGIN_MM = 10.
+
+
+def _contact_patch(revision, patch, reference, margin, ctx):
+    """Retain the original scan inside an offset of the feature's root.
+
+    Clip triangles in the wall plane and lift their subdivisions back onto the
+    original triangle planes. This preserves texture and undercuts, rather than
+    reconstructing a height field. The outline also includes overhanging parts
+    of the seed, so adding context never cuts away the observed grip.
+    """
+    import shapely
+    from shapely.geometry import Polygon, LineString
+
+    ctx.step(28, "Preserving surrounding rock for hand contact…")
+    root = Polygon(patch.vertices[boundary_loops(patch)[0], :2])
+    if not root.is_valid or root.area < 1e-4:
+        raise GeometryError("The feature's root overlaps in the wall plane. Repair the scan before retaining surrounding rock.")
+    seed_triangles = shapely.polygons(patch.triangles[:, :, :2])
+    outside = ~shapely.covers(root, seed_triangles)
+    outline = shapely.union_all([root.buffer(margin, quad_segs=8),
+                                *seed_triangles[outside]])
+    local = revision.mesh.copy()
+    local.apply_transform(reference.frame)
+    triangles = local.triangles
+    lo, hi = outline.bounds[:2], outline.bounds[2:]
+    nearby = np.flatnonzero((triangles[:, :, :2].max(axis=1) >= lo).all(axis=1) &
+                           (triangles[:, :, :2].min(axis=1) <= hi).all(axis=1))
+    projected = shapely.polygons(triangles[nearby, :, :2])
+    inside = shapely.covers(outline, projected)
+    retained = triangles[nearby[inside]].tolist()
+    for count, index in enumerate(nearby[~inside]):
+        if count % 250 == 0:
+            ctx.step(30, "Clipping the contact margin without changing scanned texture…")
+        triangle = triangles[index]
+        xy = triangle[:, :2]
+        matrix = np.column_stack([xy, np.ones(3)])
+        if abs(np.linalg.det(matrix)) > 1e-12 * max(float(np.ptp(xy, axis=0).max()) ** 2, 1.):
+            clipped = Polygon(xy).intersection(outline)
+            if clipped.is_empty or clipped.area < 1e-12:
+                continue
+            # Polygon intersections can be disconnected on a concave root.
+            for part in shapely.get_parts(clipped):
+                if part.geom_type != "Polygon":
+                    continue
+                for face in shapely.constrained_delaunay_triangles(part).geoms:
+                    face_xy = np.asarray(face.exterior.coords)[:3]
+                    weights = np.linalg.solve(matrix.T, np.column_stack([face_xy, np.ones(3)]).T).T
+                    points = weights @ triangle
+                    if np.dot(np.cross(points[1] - points[0], points[2] - points[0]), local.face_normals[index]) < 0:
+                        points = points[::-1]
+                    retained.append(points.tolist())
+        else:
+            # A vertical scanned triangle projects to a line. Clip along that
+            # line in 3D, retaining its full depth instead of discarding it.
+            distances = np.linalg.norm(xy[:, None] - xy[None, :], axis=2)
+            a, b = np.unravel_index(distances.argmax(), distances.shape)
+            direction = xy[b] - xy[a]
+            length = np.linalg.norm(direction)
+            if length < 1e-10:
+                continue
+            direction /= length
+            clipped = LineString([xy[a], xy[b]]).intersection(outline)
+            for part in shapely.get_parts(clipped):
+                if part.geom_type != "LineString" or part.length < 1e-10:
+                    continue
+                ends = np.asarray(part.coords) @ direction
+                points = triangle.copy()
+                for sign, limit in ((1., ends.min()), (-1., ends.max())):
+                    result = []
+                    d = sign * (points[:, :2] @ direction - limit)
+                    for i in range(len(points)):
+                        j = (i + 1) % len(points)
+                        if d[i] >= -1e-10:
+                            result.append(points[i])
+                        if (d[i] > 0) != (d[j] > 0) and abs(d[i] - d[j]) > 1e-12:
+                            result.append(points[i] + (points[j] - points[i]) * d[i] / (d[i] - d[j]))
+                    points = np.asarray(result)
+                    if len(points) < 3:
+                        break
+                retained.extend([points[[0, i, i + 1]].tolist() for i in range(1, len(points) - 1)])
+    if not retained:
+        raise GeometryError("No surrounding scan surface is available for this contact margin.")
+    retained = np.asarray(retained)
+    expanded = trimesh.Trimesh(retained.reshape(-1, 3), np.arange(retained.size // 3).reshape(-1, 3), process=False)
+    _weld_cut_seams(expanded)
+    expanded.update_faces(expanded.nondegenerate_faces())
+    expanded.update_faces(expanded.unique_faces())
+    expanded.remove_unreferenced_vertices()
+    # Separate overlapping/disconnected scan sheets cannot become this hold.
+    pieces = list(expanded.split(only_watertight=False, repair=False))
+    expanded = min(pieces, key=lambda piece: trimesh.proximity.closest_point(piece, patch.triangles_center[:1])[1][0])
+    loops = boundary_loops(expanded)
+    if len(loops) != 1:
+        raise GeometryError("The surrounding contact area contains missing scan data. Repair the scan or reduce Surrounding rock.")
+    rim = expanded.vertices[loops[0], :2]
+    if shapely.distance(outline.boundary, shapely.points(rim)).max() > 1e-4:
+        raise GeometryError("The contact margin reaches an open scan edge or gap. Include more surrounding rock in the scan or reduce Surrounding rock.")
+    return expanded
+
+
 @dataclass
 class WallReference:
     frame: np.ndarray
@@ -92,9 +193,13 @@ def raised_patches(revision, reference, context=None, kind="protrusion"):
     return pieces
 
 
-def protrusion_hold(revision, patch, reference, name="Hold", context=None, kind="protrusion", allow_incomplete=False):
+def protrusion_hold(revision, patch, reference, name="Hold", context=None, kind="protrusion", allow_incomplete=False,
+                    contact_margin_mm=DEFAULT_CONTACT_MARGIN_MM):
     ctx = context or TaskContext()
     patch = patch.copy()
+    if not np.isfinite(contact_margin_mm) or not 0 <= contact_margin_mm <= 50.:
+        raise GeometryError("Surrounding rock must be between 0 and 50 mm.")
+    contact_margin = 0.
     issue = ""
     loops = []
     cut_height = reference.tolerance if kind == "protrusion" else -reference.tolerance
@@ -109,12 +214,18 @@ def protrusion_hold(revision, patch, reference, name="Hold", context=None, kind=
         issue = f"This feature has broken boundaries or missing scan data. Detail: {error}"
         if not allow_incomplete:
             raise GeometryError(issue) from error
-    # Place the natural root contour exactly on the mounting plane; this is a
-    # rigid translation of retained triangles, not a reconstruction of the grip.
+    if not issue and kind == "protrusion" and contact_margin_mm > 0:
+        # A damaged feature keeps its observed root for the explicit quick
+        # repair workflow. Do not invent contact texture across missing data.
+        patch = _contact_patch(revision, patch, reference, contact_margin_mm, ctx)
+        contact_margin = float(contact_margin_mm)
+        loops = boundary_loops(patch)
+    # Store a rigidly translated scan in the wall frame. Root-only extraction
+    # closes at zero; a contact band keeps its measured rim heights unchanged.
     frame = reference.frame.copy()
     frame[2, 3] -= cut_height
     patch.vertices[:, 2] -= cut_height
-    if not issue:
+    if not issue and not contact_margin:
         patch.vertices[loops[0], 2] = 0.
     center = patch.bounds.mean(axis=0)[:2]
     frame[:2, 3] -= center
@@ -131,7 +242,8 @@ def protrusion_hold(revision, patch, reference, name="Hold", context=None, kind=
     hold = Hold(name, revision.id, indices, patch, protected, frame, backing=0., edge_flare=0.,
                 edge_style="natural-base", feature_kind=kind,
                 extraction=dict(wall_offset_mm=cut_height, wall_noise_mm=reference.noise,
-                                wall_support_fraction=reference.inlier_fraction))
+                                wall_support_fraction=reference.inlier_fraction,
+                                contact_margin_mm=contact_margin, requested_contact_margin_mm=float(contact_margin_mm)))
     if issue and loops:
         outer = max(range(len(loops)), key=lambda i: np.linalg.norm(np.ptp(patch.vertices[loops[i]], axis=0)))
         boundaries = []
@@ -149,6 +261,13 @@ def protrusion_hold(revision, patch, reference, name="Hold", context=None, kind=
         hold.preparation = ("Isolated a recess below the surrounding wall. Preserved its inward surface and added "
                             "3 mm below the deepest point, with an outside return to make a closed pocket prototype. "
                             "This supporting material is needed for the cavity; inspect the amber surfaces.")
+    elif contact_margin:
+        hold.backing = 3.
+        hold.edge_style = "wall-ramp"
+        hold.preparation = (f"Preserved the raised feature and {contact_margin:.1f} mm of surrounding scanned rock "
+                            "for contact around its base. Retained texture and grip geometry are unchanged. "
+                            "Added 3 mm beneath the lowest retained point and a gradual outside return to the flat back. "
+                            "Green is scanned rock; amber is generated support.")
     else:
         hold.preparation = (f"Isolated the raised feature at its natural root ({reference.tolerance:.1f} mm above the fitted wall, "
                             "to exclude scan noise). Closed its underside with a flat back. No added backing or surrounding plate.")
@@ -163,6 +282,9 @@ def protrusion_hold(revision, patch, reference, name="Hold", context=None, kind=
         hold.extraction.update(geometry_status="needs-repair", geometry_issue=issue)
         hold.preparation = ("Feature recognized from the available scanned surface. Needs repair before mounting or STL export. "
                             + issue + " Missing boundaries are highlighted; missing grip geometry has not been invented.")
+        if kind == "protrusion" and contact_margin_mm > 0 and not contact_margin:
+            hold.preparation += (" The surrounding rock margin could not be added to this incomplete root; "
+                                 "repair the scan and re-extract to retain contact texture around the base.")
         details = hold.extraction.get("missing_boundaries", [])
         if details:
             hold.preparation += " Detected: " + "; ".join(b['kind'] + " (" +
@@ -184,7 +306,8 @@ def feature_regions(revision, context=None, sensitivity=50.):
     return reference, regions
 
 
-def prepare_feature(revision, face_indices, name="Hold", context=None, allow_incomplete=False):
+def prepare_feature(revision, face_indices, name="Hold", context=None, allow_incomplete=False,
+                    contact_margin_mm=DEFAULT_CONTACT_MARGIN_MM):
     """Use the painted region as a seed; trace the complete natural feature."""
     ctx = context or TaskContext()
     indices = np.unique(np.asarray(face_indices, dtype=int))
@@ -204,6 +327,7 @@ def prepare_feature(revision, face_indices, name="Hold", context=None, allow_inc
                             "Turn off Isolate natural feature only if you want a backed surface-patch prototype.")
     # Do not silently switch to another, less-selected feature if this one fails.
     _, kind, patch = max(ranked, key=lambda value: value[0])
-    hold = protrusion_hold(revision, patch, reference, name, ctx, kind, allow_incomplete=allow_incomplete)
-    hold.preparation += " The selection identified the feature; its outline follows the wall intersection."
+    hold = protrusion_hold(revision, patch, reference, name, ctx, kind, allow_incomplete=allow_incomplete,
+                           contact_margin_mm=contact_margin_mm)
+    hold.preparation += " The selection identified the feature; its outline follows the natural root and chosen contact margin."
     return hold

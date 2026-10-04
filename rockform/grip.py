@@ -102,7 +102,9 @@ def review_text(hold):
                 "Coral lines mark open or damaged boundaries. Repair the source scan and re-extract; this feature stays saved for reference.\n"
                 + " ".join(review['reasons']) + "\n" + review['orientation'])
     status = "Broad-feature screen passed; inspect the natural contact." if review['eligible'] else "Manual shape only — excluded from automatic handhold suggestions."
-    support = (f"Raised feature: {hold.backing:.1f} mm added backing; no surrounding plate." if hold.feature_kind == "protrusion" else
+    contact_margin = hold.extraction.get("contact_margin_mm", 0.) * hold.scale
+    support = (f"Raised feature: {contact_margin:.1f} mm surrounding scanned rock; {hold.backing:.1f} mm backing; {review['support_width_mm']:.1f} mm outside return." if contact_margin else
+               f"Raised feature: {hold.backing:.1f} mm added backing; no surrounding plate." if hold.feature_kind == "protrusion" else
                f"Recess: {hold.backing:.1f} mm below the cavity; {review['support_width_mm']:.1f} mm outside support." if hold.feature_kind == "recess" else
                f"Wall return: {review['support_width_mm']:.1f} mm.")
     return (f"{status}\nNatural relief: {review['relief_mm']:.1f} mm. {support}\n"

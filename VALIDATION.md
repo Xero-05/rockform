@@ -1,4 +1,18 @@
-# Rockform 0.1.7 validation
+# Rockform 0.1.8 validation
+
+## Surrounding rock extraction update
+
+Raised-feature extraction now retains a configurable 0–50 mm contact margin, initially 10 mm, around the natural root in the fitted wall plane. Original triangles and clipped subdivisions retain their measured surface, including overhangs and vertical grip faces. A 3 mm backing beneath the lowest retained point and a shallow outer return close the default shape. Only the generated return is simplified by 0.001 mm to avoid numerically thin back triangles; scanned contact geometry is unchanged. A 0 mm margin retains the previous root-only shape. Recess support and existing saved designs are preserved.
+
+Contact tests cover texture below the old root cut, retention of the entire observed grip, protected triangles, offset distance, rigid transformations, separate suggestions, recesses, insufficient scan coverage, cancellation, mounts, resizing, STL reimport, saved metadata, workspace settings, and re-extraction after changing a cached suggestion's margin. A native UI capture verifies the visible control and green scanned surface versus amber support.
+
+**93 tests passed** in 357.32 seconds. Existing VTK/NumPy deprecation warnings remain non-fatal.
+
+The rebuilt `dist/Rockform/Rockform.exe` passed its frozen `--self-test` checks for all three synthetic shapes, both mounting modes, STL export/reimport, project and preview reopening, and native rendering. The raised examples use the new 3 mm backing and retained contact margins. Packaged acceptance artifacts are under ignored `test-output/contact-packaged/`. A final focused UI check also passed after adding explicit save/reopen coverage for the disabled surrounding-rock control.
+
+The saved repaired first Scaniverse scan produces a valid **170.6 × 130.0 × 42.3 mm** raised hold with the default 10 mm margin. Retained vertices match the working scan within **0.000001 mm** (maximum numerical distance about 4.6 × 10⁻¹⁴ mm). Its separate incomplete feature stays marked for repair, with no surrounding texture invented. The input project was read without saving changes. Local check artifacts are under ignored `test-output/check-real-contact.json` and `test-output/contact-margin-window.png`.
+
+## Previous 0.1.7 import and area selection validation
 
 Import now defaults to adaptive decimation after unit confirmation. The full-resolution original is retained. Dense, locally low-detail regions are simplified with fixed feature/patch boundaries, a VTK error limit and bidirectional sampled surface checks against 0.20 mm. Reduction retries at lower strengths before giving up. Coarse scans and complex regions can remain unchanged. This is sampled verification, not a claim of scan accuracy or an exact Hausdorff bound.
 
