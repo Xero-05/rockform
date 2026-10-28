@@ -44,25 +44,35 @@ class GripCone:
     # (degrees from the arc start, weight): sloping 0, flat (45 from start) 0.6, 30 degrees incut 1.
     quality: tuple | None = ((0., 0.), (45., .6), (75., 1.), (180., 1.))
     hand_width: float | None = 90.
+    # Squeeze grips (pinch sides): friction coefficient limiting faces tilted toward the climber; None = off.
+    squeeze_friction: float | None = None
     window_axis: int = 0      # 0 = band across the wall, 1 = band up the wall (pinch sides)
 
     def as_dict(self):
         return dict(start=np.round(self.start, 6).tolist(), end=np.round(self.end, 6).tolist(),
                     cutoff_deg=float(self.cutoff_deg), pull=np.round(self.pull, 6).tolist(),
                     quality=None if self.quality is None else [list(q) for q in self.quality], hand_width=self.hand_width,
+                    squeeze_friction=self.squeeze_friction,
                     window_axis=self.window_axis)
 
 
-def pinch_cones(cutoff_deg=40., thumb_width=35.):
-    """One cone per side of a pinch: side normals from 30 degrees below to 60 degrees above horizontal.
+def pinch_cones(cutoff_deg=40., thumb_width=35., friction=np.tan(np.radians(40.))):
+    """One cone per side of a pinch: side normals within 30 degrees of horizontal. Steeper faces are
+    the hold's top or bottom, not something to squeeze.
 
     The thumb side limits a pinch, so each side counts only a thumb-pad-length band up the wall.
+    A side that faces downward slips (weight 0), a vertical side holds well (0.8), and a side that
+    faces upward, so the hold widens toward the bottom, holds best (1 at 30 degrees above horizontal).
+    A side tilted by t toward the climber turns part of the squeeze into a push off the hold; friction
+    resists it only while tan(t) < friction, so such a face counts 1 - tan(t) / friction. Rounded
+    pinches have more of these faces and rate harder than parallel-sided ones.
     """
     def side(sign):
-        down, up = np.radians(-30.), np.radians(60.)
+        down, up = np.radians(-30.), np.radians(30.)
         return GripCone(np.array([sign * np.cos(down), np.sin(down), 0.]),
                         np.array([sign * np.cos(up), np.sin(up), 0.]), cutoff_deg,
-                        np.array([-sign, -1., 0.]) / np.sqrt(2.), quality=None, hand_width=thumb_width, window_axis=1)
+                        np.array([-sign, -1., 0.]) / np.sqrt(2.), quality=((0., 0.), (30., .8), (60., 1.)),
+                        hand_width=thumb_width, window_axis=1, squeeze_friction=friction)
     return side(-1.), side(1.)
 
 
@@ -91,6 +101,11 @@ def holding_weights(normals, cone):
     inside = (np.cross(start, projected) @ plane >= -1e-9) & (np.cross(projected, end) @ plane >= -1e-9)
     within = np.degrees(np.arcsin(np.clip(np.abs(out_of_plane), 0., 1.))) <= cone.cutoff_deg
     weight = (inside & within & (length > 1e-9)).astype(float)
+    if cone.squeeze_friction:
+        # Tilt toward the climber (+Z) slides a squeezing hand outward; tilt toward the wall does not.
+        toward = out_of_plane * np.sign(plane[2]) if abs(plane[2]) > 1e-9 else np.abs(out_of_plane)
+        tilt = np.arcsin(np.clip(toward, 0., 1.))
+        weight *= np.clip(1. - np.tan(tilt) / cone.squeeze_friction, 0., 1.)
     if cone.quality is not None:
         from_start = np.degrees(np.arccos(np.clip(projected @ start, -1., 1.)))
         at, value = np.array(cone.quality, dtype=float).T

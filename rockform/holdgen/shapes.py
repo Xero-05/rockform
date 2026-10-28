@@ -49,6 +49,11 @@ SPECS = {
 HARDNESS_RANGE = (-0.2, 1.2)    # slight extrapolation beyond the published anchors
 MINIMUM = dict(D=5., H=24., tl=12., bd=12., d=10., hy=18., r=2., nt=1.6, nb=1.6, p=2.)
 FINGER_W = {1: 24., 2: 44., 3: 64.}
+# Size presets scale a hold's body. Finger-sized features keep their size: a crimp's edge depth, a pinch's
+# gap and a pocket's hole are set by difficulty and the hand, not by how big the hold is.
+SIZES = {"XS": .5, "S": .7, "M": 1., "L": 1.25, "XL": 1.5}
+SIZE_KEYS = {"jug": ("W", "H", "D", "tl", "bd"), "crimp": ("W", "H"), "edge": ("W", "H"),
+             "sloper": ("W", "H", "D"), "pinch": ("H", "D"), "pocket": ("W", "H", "D")}
 
 
 def seed_to_int(seed):
@@ -150,34 +155,44 @@ def _sloper(S):
 
 
 def _pinch(S, crown):
+    """Loaf with long ramps at both ends, so its top and bottom are steep slopes rather than ledges and
+    squeezing the sides is the way to hold it."""
     L = S["H"]
 
     def f(D, x):
-        return [(-L / 2, 0, 0), (-L / 2 + .03 * L, .90 * D, .50 * D), (crown * L, D, 0),
-                (L / 2 - .03 * L, .90 * D, .50 * D), (L / 2, 0, 0)]
+        return [(-L / 2, 0, 0), (-.18 * L, .96 * D, .25 * L), (crown * L, D, 0),
+                (.18 * L, .96 * D, .25 * L), (L / 2, 0, 0)]
     return f
 
 
 def _pocket(S, pocket):
-    H = S["H"]
-    d, hy, a = pocket["d"], pocket["hy"], math.radians(pocket["a"])
+    """Block with one finger pocket. The pocket floor runs down into the hold (incut), so a finger hooks
+    instead of sliding out, but stays above the sloped belly. The top ramps to the wall more steeply than
+    45 degrees, so the block's top is no ledge and the pocket is the grip; the block grows taller when it
+    needs room for that ramp. Heights are measured up from the bottom wall corner, then centred."""
+    Dn, d, hy, a = S["D"], pocket["d"], pocket["hy"], math.radians(pocket["a"])
     wx, xc = pocket["wx"], pocket["xc"]
-    yA, yT = -H / 2, H / 2
-    floor = yA + max(12., .20 * H + 6.)       # the opening stays above the sloped belly
-    dyin = min(d * math.tan(a), .9 * ((yT - 12) - (floor + hy)))
-    yp = float(np.clip(pocket["yp"] * H, floor + hy / 2, max(floor + hy / 2, yT - 12 - hy / 2 - dyin)))
+    belly, ramp = .20 * S["H"], 1.15 * Dn          # ramp rise > run: its normal is ~49 degrees off vertical
+    lowest = belly + 6.                             # opening bottom, clear of the belly
+    H = max(S["H"], lowest + hy + 6. + ramp)
+    y0n = lowest + (H - ramp - 6. - hy - lowest) * pocket["yp"]   # spare height places the pocket
+    y1n = y0n + hy
+    shift = -H / 2
 
     def f(D, x):
-        pts = [(yA, 0, 0), (yA + .20 * H, D, .25 * H)]   # sloped belly: no downward ledge to undercling
+        pts = [(shift, 0, 0), (shift + belly, D, .25 * S["H"])]
         t = (x - xc) / (wx / 2)
         sd = math.sqrt(max(0., 1 - t * t)) if abs(t) < 1 else 0.
         if sd > .06:
             de = min(d, D - 9.) * sd
-            dy = min(de * math.tan(a), dyin)
             h2 = hy / 2 * min(1., .35 + sd)
-            y0, y1 = yp - h2, yp + h2
-            pts += [(y0, D, 4. * sd), (y0 + dy, D - de, .45 * hy * sd), (y1 + dy, D - de, .45 * hy * sd), (y1, D, 4. * sd)]
-        return pts + [(yT - .03 * H, D, .5 * D), (yT, 0, 0)]
+            y0, y1 = (y0n + y1n) / 2 - h2, (y0n + y1n) / 2 + h2
+            room = y0 - belly * (D - de) / D - 4.       # floor must stay above the belly at that depth
+            dy = max(0., min(de * math.tan(a), room))
+            pts += [(shift + y0, D, 4. * sd), (shift + y0 - dy, D - de, .45 * hy * sd),
+                    (shift + y1 - dy, D - de, .45 * hy * sd), (shift + y1, D, 4. * sd)]
+        top = max(H - 1.15 * D, y1n + 4.)
+        return pts + [(shift + top, D, .15 * D), (shift + H, 0, 0)]
     return f
 
 
@@ -205,8 +220,10 @@ def _fingers(hardness, draw):
     return (2 if draw < .5 else 3) if hardness < 2 / 3 else (1 if draw < .5 else 2)
 
 
-def build(hold_type, hardness, seed=0):
-    """Return (trimesh, parameters) for a closed solid with outward normals."""
+def build(hold_type, hardness, seed=0, size=1., fingers=None):
+    """Return (trimesh, parameters) for a closed solid with outward normals. `size` scales the body
+    (1 = the published dimensions; see SIZES). `fingers` fixes a pocket's finger count (default: from
+    hardness)."""
     if hold_type not in SPECS:
         raise ValueError(f"Unknown hold type {hold_type!r}; choose one of {', '.join(HOLD_TYPES)}.")
     var = Variation(seed)
@@ -217,7 +234,10 @@ def build(hold_type, hardness, seed=0):
     for key, k in zip(("lean", "inc", "a"), var.angle):
         if key in S:
             S[key] += k
-    params = dict(type=hold_type, hardness=float(hardness), seed=str(seed), **{k: round(float(v), 3) for k, v in S.items()})
+    for key in SIZE_KEYS[hold_type]:
+        S[key] = max(S[key] * size, MINIMUM.get(key, 0.))
+    params = dict(type=hold_type, hardness=float(hardness), seed=str(seed), size=float(size),
+                  **{k: round(float(v), 3) for k, v in S.items()})
 
     if hold_type == "jug":
         prof = _jug(S)
@@ -228,9 +248,9 @@ def build(hold_type, hardness, seed=0):
     elif hold_type == "pinch":
         prof = _pinch(S, var.crown)
     else:
-        fingers = _fingers(hardness, var.finger)
+        fingers = fingers or _fingers(hardness, var.finger)
         pocket = dict(d=min(S["d"], S["D"] - 9.), hy=S["hy"], a=S["a"], wx=FINGER_W[fingers],
-                      xc=.10 * var.pocket[0] * S["W"], yp=.125 * var.pocket[1] - .025)
+                      xc=.10 * var.pocket[0] * S["W"], yp=.5 + .4 * var.pocket[1])
         prof = _pocket(S, pocket)
         params.update(fingers=fingers, pocket_depth=round(pocket["d"], 3))
 

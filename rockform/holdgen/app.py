@@ -12,9 +12,9 @@ from pyvistaqt import QtInteractor
 from PySide6 import QtCore, QtGui, QtWidgets
 from ..widgets import STYLE, label, button
 from ..geometry import validate_solid
-from .shapes import HOLD_TYPES, HOLD_INFO, build
+from .shapes import HOLD_TYPES, HOLD_INFO, SIZES, build
 from .holding import orientation
-from .generate import HoldRequest, generate, parse_description, measure, GRAB_STYLES, GRAB_NAMES
+from .generate import HoldRequest, generate, parse_description, measure, best_mode, pull_range, GRAB_STYLES, GRAB_NAMES
 
 EXTRA_STYLE = """
 QToolButton#holdType { background: #18282f; border: 1px solid #2d4147; border-radius: 8px; padding: 4px;
@@ -23,6 +23,8 @@ QToolButton#holdType:hover { border-color: #73c8b4; }
 QToolButton#holdType:checked { background: #29483f; border: 2px solid #9edbc1; color: #ecfff8; font-weight: 650; }
 QPushButton#grab { text-align: left; padding: 6px 8px; font-size: 12px; }
 QPushButton#grab:checked { background: #29483f; border: 1px solid #9edbc1; }
+QPushButton#size { padding: 6px 4px; }
+QPushButton#size:checked { background: #29483f; border: 2px solid #9edbc1; color: #ecfff8; font-weight: 650; }
 QFrame#card { background: #15242b; border: 1px solid #2d4147; border-radius: 8px; }
 QLabel#big { font-size: 34px; font-weight: 700; color: #f3f5ed; }
 QLabel#value { color: #b8f0d8; font-weight: 650; min-width: 92px; }
@@ -55,6 +57,14 @@ def wall_text(angle):
     if angle >= 89.5:
         return "Roof"
     return f"{abs(angle):.0f}° {'overhang' if angle > 0 else 'slab'}"
+
+
+def rotation_text(angle):
+    if abs(angle) < .5:
+        return "As designed"
+    if abs(abs(angle) - 180) < .5:
+        return "Upside down"
+    return f"{abs(angle):.0f}° {'anticlockwise' if angle > 0 else 'clockwise'}"
 
 
 def type_icon(hold_type, size=QtCore.QSize(76, 54)):
@@ -256,7 +266,9 @@ class GeneratorWindow(QtWidgets.QMainWindow):
         super().__init__()
         self.setWindowTitle("Rockform hold generator")
         self.resize(1380, 880)
-        self.hold, self.shown_type, self.pull_dir = None, None, (0., 0.)
+        self.hold, self.shown_type, self.pull_dir, self.pull = None, None, (0., 0.), None
+        self.placement_timer = QtCore.QTimer(self, singleShot=True, interval=150)
+        self.placement_timer.timeout.connect(self.refresh_placement)
         self.debounce = QtCore.QTimer(self, singleShot=True, interval=300)
         self.debounce.timeout.connect(self.from_controls)
 
@@ -286,6 +298,22 @@ class GeneratorWindow(QtWidgets.QMainWindow):
         form.addLayout(types)
         self.type_info = label(HOLD_INFO[HOLD_TYPES[0]])
         form.addWidget(self.type_info)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(label("Size"))
+        self.size_group = QtWidgets.QButtonGroup(self)
+        for i, name in enumerate(SIZES):
+            b = QtWidgets.QPushButton(name)
+            b.setObjectName("size")
+            b.setCheckable(True)
+            b.setToolTip(f"{name}: body × {SIZES[name]:g}. Finger-sized features (edge depth, pocket hole, "
+                         "pinch gap) keep their size.")
+            self.size_group.addButton(b, i)
+            row.addWidget(b)
+        self.size_group.button(list(SIZES).index("M")).setChecked(True)
+        self.size_group.idClicked.connect(lambda _: self.from_controls())
+        form.addLayout(row)
+        self.size_info = label("")
+        form.addWidget(self.size_info)
 
         form.addWidget(label("2  Difficulty", "section"))
         row = QtWidgets.QHBoxLayout()
@@ -302,7 +330,7 @@ class GeneratorWindow(QtWidgets.QMainWindow):
         self.reach = label("")
         form.addWidget(self.reach)
 
-        form.addWidget(label("3  Wall angle", "section"))
+        form.addWidget(label("3  Wall and placement", "section"))
         row = QtWidgets.QHBoxLayout()
         self.wall = slider(-30, 90, 0, 5)
         self.wall_value = label("", "value")
@@ -312,6 +340,18 @@ class GeneratorWindow(QtWidgets.QMainWindow):
         presets = QtWidgets.QHBoxLayout()
         for name, angle in (("Slab", -10), ("Vertical", 0), ("30°", 30), ("45°", 45), ("Roof", 90)):
             presets.addWidget(button(name, lambda _=False, a=angle: self.wall.setValue(a)))
+        form.addLayout(presets)
+        form.addWidget(label("Rotation on the wall: turns the bolted hold while gravity stays put. "
+                             "The shape does not change."))
+        row = QtWidgets.QHBoxLayout()
+        self.rotation = slider(-180, 180, 0, 5)
+        self.rotation_value = label("", "value")
+        row.addWidget(self.rotation, 1)
+        row.addWidget(self.rotation_value)
+        form.addLayout(row)
+        presets = QtWidgets.QHBoxLayout()
+        for name, angle in (("↻90°", -90), ("↻45°", -45), ("Upright", 0), ("↺45°", 45), ("↺90°", 90)):
+            presets.addWidget(button(name, lambda _=False, a=angle: self.rotation.setValue(a)))
         form.addLayout(presets)
 
         form.addWidget(label("4  Variation", "section"))
@@ -337,6 +377,7 @@ class GeneratorWindow(QtWidgets.QMainWindow):
         scroll = QtWidgets.QScrollArea()
         scroll.setWidget(side)
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         scroll.setFixedWidth(360)
 
         # Viewer with overlay options.
@@ -348,9 +389,10 @@ class GeneratorWindow(QtWidgets.QMainWindow):
         options.addSpacing(16)
         options.addWidget(label("Overlay"))
         self.overlay = QtWidgets.QComboBox()
-        self.overlay.addItems(["Grip heat map", "Counted area (one hand)", "Plain"])
-        self.overlay.setToolTip("Heat map: how well each surface resists the selected pull.\n"
-                                "Counted area: the surface one hand uses, which sets the difficulty.")
+        self.overlay.addItems(["Grip quality: every surface", "Scored area: one hand's grip", "Plain"])
+        self.overlay.setToolTip("Grip quality: how well every surface resists the selected pull, wherever it is.\n"
+                                "Scored area: only the best hand-width band (35 mm thumb band for pinches);\n"
+                                "its weighted area is what the difficulty score is computed from.")
         self.overlay.currentIndexChanged.connect(lambda _: self.draw(keep_camera=True))
         options.addWidget(self.overlay)
         self.arrows = QtWidgets.QCheckBox("Pull arrows")
@@ -401,7 +443,10 @@ class GeneratorWindow(QtWidgets.QMainWindow):
         frame, c = card("HOLD")
         self.details = label("")
         self.details.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-        c.addWidget(self.details, 1)
+        c.addWidget(self.details)
+        self.holding_line = label("")
+        c.addWidget(self.holding_line)
+        c.addStretch()
         self.export_button = button("Export STL + report…", self.export, primary=True)
         self.export_button.setEnabled(False)
         c.addWidget(self.export_button)
@@ -424,6 +469,8 @@ class GeneratorWindow(QtWidgets.QMainWindow):
         for s in (self.difficulty, self.wall):
             s.valueChanged.connect(self.update_labels)
             s.valueChanged.connect(lambda _: self.debounce.start())
+        self.rotation.valueChanged.connect(self.update_labels)
+        self.rotation.valueChanged.connect(lambda _: self.placement_timer.start())
         self.update_labels()
         self.from_controls()
 
@@ -435,6 +482,8 @@ class GeneratorWindow(QtWidgets.QMainWindow):
         d = self.difficulty.value() / 10
         self.difficulty_value.setText(f"{d:.1f} · {difficulty_word(d)}")
         self.wall_value.setText(wall_text(self.wall.value()))
+        r = self.rotation.value()
+        self.rotation_value.setText("Upright" if r == 0 else f"{abs(r)}° {'↺' if r > 0 else '↻'}")
 
     def type_changed(self, index):
         self.type_info.setText(HOLD_INFO[HOLD_TYPES[index]])
@@ -445,7 +494,7 @@ class GeneratorWindow(QtWidgets.QMainWindow):
         self.from_controls()
 
     def set_controls(self, request, target):
-        widgets = (self.difficulty, self.wall, self.seed, self.type_group)
+        widgets = (self.difficulty, self.wall, self.seed, self.type_group, self.size_group)
         for w in widgets:
             w.blockSignals(True)
         self.type_group.button(HOLD_TYPES.index(request.hold_type)).setChecked(True)
@@ -453,6 +502,9 @@ class GeneratorWindow(QtWidgets.QMainWindow):
         self.difficulty.setValue(round(target * 10))
         self.wall.setValue(round(request.wall_angle))
         self.seed.setText(str(request.seed))
+        nearest = min(SIZES, key=lambda k: abs(np.log(SIZES[k] / request.size)))
+        self.size_group.button(list(SIZES).index(nearest)).setChecked(True)
+        self.custom_size = None if abs(SIZES[nearest] - request.size) < 1e-6 else request.size
         for w in widgets:
             w.blockSignals(False)
         self.update_labels()
@@ -467,7 +519,11 @@ class GeneratorWindow(QtWidgets.QMainWindow):
 
     def from_controls(self):
         self.debounce.stop()
-        self.run(HoldRequest(self.kind(), self.difficulty.value() / 10, None, self.seed.text() or 0, float(self.wall.value())))
+        size = SIZES[list(SIZES)[self.size_group.checkedId()]]
+        if getattr(self, "custom_size", None) and self.sender() is not self.size_group:
+            size = self.custom_size        # keep a size typed in a description until a size button is chosen
+        self.run(HoldRequest(self.kind(), self.difficulty.value() / 10, None, self.seed.text() or 0,
+                             float(self.wall.value()), size=size))
 
     def run(self, request):
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
@@ -483,29 +539,40 @@ class GeneratorWindow(QtWidgets.QMainWindow):
         self.message.setText("".join(f"⚠ {n}\n" for n in h.notes).strip())
         self.reach.setText(f"A {request.hold_type} with this variation reaches {h.achievable[0]:.1f}–{h.achievable[1]:.1f} "
                            f"on a {wall_text(request.wall_angle).lower()} wall.")
-        lo, hi = h.difficulty_range
-        self.big.setText(f"{h.difficulty:.1f}")
-        self.big.setStyleSheet(f"color: {difficulty_color(h.difficulty).name()};")
-        self.word.setText(f"{difficulty_word(h.difficulty)}<br><span style='font-size:12px;color:#98aaa9'>"
-                          f"straight-down pull</span>")
-        self.range_bar.show_range(h.difficulty, lo, hi)
-        self.range_text.setText(f"<b>{lo:.1f} – {hi:.1f}</b> for pulls within {h.pull['cone_deg']:.0f}° of straight down "
-                                f"(dashed line in the chart).")
+        size = " × ".join(f"{v:.0f}" for v in h.mesh.extents)
+        inches = " × ".join(f"{v / 25.4:.1f}" for v in h.mesh.extents)
+        self.size_info.setText(f"{size} mm ({inches} in)" + ("" if request.size == 1 else f" · body × {request.size:.2f}"))
+        extra = f"<br>{h.params['fingers']}-finger pocket, {h.params['pocket_depth']:.0f} mm deep" if "fingers" in h.params else ""
+        self.details.setText(f"<b>{request.hold_type.capitalize()}</b>, variation {request.seed}<br>{size} mm "
+                             f"({inches} in) · "
+                             f"{h.mesh.volume / 1000:.0f} cm³<br>Holding area {h.holding_area_mm2:.0f} mm² straight down{extra}")
+        self.export_button.setEnabled(True)
+        same = self.shown_type == request.hold_type
+        self.shown_type = request.hold_type
+        self.refresh_placement(keep_camera=same, pull_dir=self.pull_dir if same else (0., 0.))
+
+    def placement(self):
+        return float(self.rotation.value())
+
+    def refresh_placement(self, keep_camera=True, pull_dir=None):
+        """Re-rate the same shape for its current rotation on the wall (no regeneration)."""
+        h = self.hold
+        if h is None:
+            return
+        rot = self.placement()
+        self.pull = h.pull if rot == 0 else pull_range(h.mesh, h.request, rotation_deg=rot)
+        lo, hi = self.pull["min"], self.pull["max"]
+        placed = "" if rot == 0 else f" with the hold turned {rotation_text(rot)}"
+        self.range_text.setText(f"<b>{lo:.1f} – {hi:.1f}</b> for pulls within {self.pull['cone_deg']:.0f}° of straight "
+                                f"down{placed} (dashed line in the chart).")
         arrows = {"side_right": " →", "side_left": " ←"}
         for i, name in enumerate(GRAB_STYLES):
-            d = h.pull["styles"][name]
+            d = self.pull["styles"][name]
             b = self.style_group.button(i)
             b.setText(f"{GRAB_NAMES[name].split(' (')[0]}{arrows.get(name, '')}   {d:.1f}")
             b.setStyleSheet(f"border-left: 5px solid {difficulty_color(d).name()};")
             b.setToolTip(f"{GRAB_NAMES[name]}: difficulty {d:.1f}, {difficulty_word(d).lower()}")
-        size = " × ".join(f"{v:.0f}" for v in h.mesh.extents)
-        extra = f"<br>{h.params['fingers']}-finger pocket, {h.params['pocket_depth']:.0f} mm deep" if "fingers" in h.params else ""
-        self.details.setText(f"<b>{request.hold_type.capitalize()}</b>, variation {request.seed}<br>{size} mm · "
-                             f"{h.mesh.volume / 1000:.0f} cm³<br>Holding area {h.holding_area_mm2:.0f} mm²{extra}")
-        self.export_button.setEnabled(True)
-        same = self.shown_type == request.hold_type
-        self.shown_type = request.hold_type
-        self.select_grab(*(self.pull_dir if same else (0., 0.)), keep_camera=same)
+        self.select_grab(*(pull_dir or self.pull_dir), keep_camera=keep_camera)
 
     def select_grab(self, around, outward, keep_camera=True):
         """Show the heat map, arrows and chart marker for one pull direction."""
@@ -517,10 +584,29 @@ class GeneratorWindow(QtWidgets.QMainWindow):
             b.setChecked(bool(match) and i == match[0])
         self.style_group.setExclusive(True)
         if self.hold is not None:
-            d = measure(self.hold.mesh, self.hold.request, around, outward)[1]
+            h = self.hold
+            rot = self.placement()
+            area, d, _ = measure(h.mesh, h.request, around, outward, rot)
             away = f", {outward:.0f}° from the wall" if outward else ""
-            self.view_title.setText(f"{pull_text(around)}{away}: difficulty {d:.1f}")
-            self.chart.show_pull(self.hold.pull, self.pull_dir)
+            turned = "" if rot == 0 else f" · hold turned {rotation_text(rot)}"
+            self.view_title.setText(f"{pull_text(around)}{away}{turned}: difficulty {d:.1f}")
+            # The card follows the selected pull and placement; as designed, pulled straight down, is the reference.
+            down = abs((around + 180) % 360 - 180) < .5 and outward == 0
+            self.big.setText(f"{d:.1f}")
+            self.big.setStyleSheet(f"color: {difficulty_color(d).name()};")
+            if down and rot == 0:
+                note = "straight-down pull"
+            else:
+                what = "straight-down pull" if down else f"{pull_text(around).lower()}{away}"
+                note = f"{what}{turned} · as designed {h.difficulty:.1f}"
+            self.word.setText(f"{difficulty_word(d)}<br><span style='font-size:12px;color:#98aaa9'>{note}</span>")
+            self.range_bar.show_range(d, self.pull["min"], self.pull["max"])
+            how = ""
+            if h.request.hold_type == "pinch":
+                how = (" · scored as a squeeze" if best_mode(h.mesh, h.request, around, outward, rot) == "squeeze"
+                       else " · scored as a ledge: easier than squeezing for this pull")
+            self.holding_line.setText(f"Holding area for this pull: {area:.0f} mm²{how}")
+            self.chart.show_pull(self.pull, self.pull_dir)
         self.draw(keep_camera=keep_camera)
 
     # ---- 3D view --------------------------------------------------------------------
@@ -529,33 +615,47 @@ class GeneratorWindow(QtWidgets.QMainWindow):
         if h is None:
             return
         camera = p.camera_position if keep_camera else None
-        rotation = orientation(h.request.wall_angle)
+        rotation = orientation(h.request.wall_angle, self.placement())
         mesh = h.mesh.copy()
         mesh.vertices = mesh.vertices @ rotation.T
         surface = pv.wrap(mesh)
-        p.clear()
+        # clear() would also delete the lights and leave every later frame unshaded.
+        p.clear_actors()
+        for title in list(p.scalar_bars.keys()):
+            p.remove_scalar_bar(title)
         mode = self.overlay.currentIndex()
+        # Smooth shading with sharp edges kept, a silhouette and crease lines make rims and pockets readable.
+        look = dict(smooth_shading=True, split_sharp_edges=True, feature_angle=35., specular=.25, specular_power=20.,
+                    silhouette=dict(color="#0b1418", line_width=2.))
         if mode == 2:
-            p.add_mesh(surface, color="#8fa5a0", smooth_shading=True)
+            p.add_mesh(surface, color="#a9b8b2", **look)
         else:
-            surface.cell_data["grip"] = h.grip_map(*self.pull_dir) if mode == 0 else h.counted_map(*self.pull_dir)
-            p.add_mesh(surface, scalars="grip", cmap=GRIP_CMAP, clim=(0, 1),
+            placed = (*self.pull_dir, self.placement())
+            surface.cell_data["grip"] = h.grip_map(*placed) if mode == 0 else h.counted_map(*placed)
+            p.add_mesh(surface, scalars="grip", cmap=GRIP_CMAP, clim=(0, 1), **look,
                        scalar_bar_args=dict(title="Grip: none to best" if mode == 0 else "Counted by one hand: none to full",
                                             n_labels=0, color="#c9d6d4", position_x=.3, position_y=.03,
                                             width=.4, height=.05, title_font_size=13))
+        creases = surface.extract_feature_edges(feature_angle=40., boundary_edges=False, non_manifold_edges=False,
+                                                manifold_edges=False)
+        if creases.n_cells:
+            p.add_mesh(creases, color="#0b1418", line_width=1.5, opacity=.7)
         extent = float(h.mesh.extents.max())
         wall = pv.Plane(center=np.array([0, 0, -.5]) @ rotation.T, direction=np.array([0, 0, 1.]) @ rotation.T,
                         i_size=extent * 1.8, j_size=extent * 1.8)
         p.add_mesh(wall, color="#9aa7a6", opacity=.18)
         if self.arrows.isChecked():
-            weights = h.counted_map(*self.pull_dir) * mesh.area_faces
+            weights = h.counted_map(*self.pull_dir, self.placement()) * mesh.area_faces
             anchor = (mesh.triangles_center * weights[:, None]).sum(axis=0) / weights.sum() \
                 if weights.sum() > 0 else mesh.bounds.mean(axis=0)
-            anchor[0] = mesh.bounds[1, 0] + extent * .45   # beside the hold so the arrows stay visible
-            for cone in h.request.cones()[:1]:
+            for cone in h.request.cones():
+                # Beside the hold so the arrows stay visible; a pinch's two sides get one set each.
+                here = anchor.copy()
+                left = cone.start[0] < -.5
+                here[0] = mesh.bounds[0, 0] - extent * .45 if left else mesh.bounds[1, 0] + extent * .45
                 for vector, color in ((cone.start, "#4fc3f7"), (cone.end, "#ba68c8"), (cone.pull, "#ef5350")):
                     direction = grab_arrow(vector, h.request.wall_angle, *self.pull_dir)
-                    p.add_mesh(pv.Arrow(start=anchor, direction=direction, scale=extent * .4), color=color)
+                    p.add_mesh(pv.Arrow(start=here, direction=direction, scale=extent * .4), color=color)
             p.add_text("arrows: grip arc start (blue) · arc end (violet) · pull (red)", font_size=9, color="#c9d6d4")
         if camera is not None:
             p.camera_position = camera
