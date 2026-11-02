@@ -3,7 +3,8 @@ import pytest
 import trimesh
 from rockform.geometry import validate_solid
 from rockform.holdgen import HOLD_TYPES, GripCone, build, generate, holding_area, parse_description, HoldRequest
-from rockform.holdgen.generate import measure
+from rockform.holdgen.generate import from_profile, measure
+from rockform.holdgen.shapes import build_profile, section
 from rockform.holdgen.holding import arc_vector, difficulty_from_area, area_for_difficulty, pole_figure
 
 
@@ -218,3 +219,35 @@ def test_parse_size_and_fingers():
     assert parse_description("small jug").size == .7
     assert parse_description("two-finger pocket").fingers == 2
     assert generate(parse_description("mono pocket")).params["fingers"] == 1
+
+
+@pytest.mark.parametrize("kind", HOLD_TYPES)
+def test_edited_profile_starts_as_the_generated_hold(kind):
+    sec = section(kind, .4, seed=3)
+    assert sec["type"] == kind and 3 <= len(sec["points"]) <= 12
+    assert sec["points"][0][1] == 0 and sec["points"][-1][1] == 0
+    generated = build(kind, .4, seed=3)[0]
+    mesh, params = build_profile(sec["points"], sec["width"], sec["outline"], sec["texture"], seed=3)
+    validate_solid(mesh)
+    assert np.allclose(mesh.extents, generated.extents, rtol=.05, atol=2.)
+    assert params["profile"]["width"] == sec["width"]
+
+
+def test_edited_profile_is_rated_by_its_shape():
+    sec = section("jug", .5, seed=1)
+    request = HoldRequest("jug", seed=1)
+    shallow = from_profile(request, sec["points"], sec["width"], sec["outline"], sec["texture"])
+    deeper = [p[:] for p in sec["points"]]
+    deeper[2][1] += 25.                         # the lip crest, pulled out from the wall
+    deep = from_profile(request, deeper, sec["width"], sec["outline"], sec["texture"])
+    assert deep.difficulty < shallow.difficulty and deep.target == deep.difficulty
+    assert deep.params["type"] == "jug" and deep.pull["styles"]
+
+
+def test_edited_profile_rejects_bad_outlines():
+    with pytest.raises(ValueError, match="crosses itself"):
+        build_profile([[0, 0, 0], [40, 30, 0], [0, 30, 0], [40, 0, 0]], 80)
+    with pytest.raises(ValueError, match="at least three"):
+        build_profile([[0, 0, 0], [40, 0, 0]], 80)
+    with pytest.raises(ValueError, match="above the bottom"):
+        build_profile([[40, 0, 0], [20, 30, 0], [0, 0, 0]], 80)

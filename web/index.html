@@ -57,6 +57,36 @@
           <button id="describe">Generate from description</button>
         </fieldset>
         <p id="hold-message" class="muted message"></p>
+
+        <details id="profile-panel">
+          <summary><h2>5 Fine-tune the profile</h2></summary>
+          <p class="muted">Edit the side section the hold is lofted from. The hold is re-rated after each change; its
+            difficulty is measured, not targeted.</p>
+          <div class="row"><button id="profile-from-hold" class="primary">Start from this hold</button>
+            <select id="profile-shape" aria-label="Shape to start from"></select><button id="profile-from-shape">Start from shape</button></div>
+          <div id="profile-editor" hidden>
+            <canvas id="profile-canvas" class="profile-canvas" height="260" tabindex="0" aria-label="Side profile editor: drag points; arrow keys nudge the selected point"></canvas>
+            <p class="muted small">Drag points to reshape the side profile (wall on the left). Double-click a line to add a point.
+              Select a point and press Delete to remove it.</p>
+            <div class="row"><button id="profile-remove" disabled>Remove point</button><button id="profile-undo" disabled>Undo</button></div>
+            <label class="muted" for="profile-radius">Corner rounding (selected point)</label>
+            <div class="slider-row"><input id="profile-radius" type="range" min="0" max="60" step="0.5" value="0" disabled><span id="profile-radius-value" class="value">–</span></div>
+            <div class="grid2">
+              <label for="profile-type">Grip behaves like</label><select id="profile-type" title="How the hold is gripped when it is rated"></select>
+            </div>
+            <label class="muted" for="profile-width">Width</label>
+            <div class="slider-row"><input id="profile-width" type="range" min="20" max="400" step="1"><span id="profile-width-value" class="value"></span></div>
+            <label class="muted" for="profile-height">Height (wall corner to wall corner)</label>
+            <div class="slider-row"><input id="profile-height" type="range" min="15" max="400" step="1"><span id="profile-height-value" class="value"></span></div>
+            <label class="muted" for="profile-depth">Depth (standoff)</label>
+            <div class="slider-row"><input id="profile-depth" type="range" min="5" max="200" step="1"><span id="profile-depth-value" class="value"></span></div>
+            <label class="muted" for="profile-outline">Outline across the wall (low = oval, high = boxy)</label>
+            <div class="slider-row"><input id="profile-outline" type="range" min="1.2" max="8" step="0.1"><span id="profile-outline-value" class="value"></span></div>
+            <label class="muted" for="profile-texture">Surface texture</label>
+            <div class="slider-row"><input id="profile-texture" type="range" min="0" max="2" step="0.05"><span id="profile-texture-value" class="value"></span></div>
+            <p id="profile-message" class="muted message"></p>
+          </div>
+        </details>
       </aside>
 
       <div class="stage">

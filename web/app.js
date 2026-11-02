@@ -137,18 +137,22 @@ function setupHoldControls(info) {
     const b = document.createElement("button");
     b.innerHTML = `<img alt="" src="data:image/svg+xml;utf8,${encodeURIComponent(info.icons[type])}"><span>${type[0].toUpperCase() + type.slice(1)}</span>`;
     b.title = info.info[type];
-    b.onclick = () => { H.typeIndex = i; markTypes(); generateHold(); };
+    b.onclick = () => { H.typeIndex = i; P.active = false; markTypes(); generateHold(); };
     types.appendChild(b);
   });
   Object.keys(info.sizes).forEach((key) => {
     const b = document.createElement("button");
     b.textContent = key;
     b.title = `${key}: body × ${info.sizes[key]}. Finger-sized features (edge depth, pocket hole, pinch gap) keep their size.`;
-    b.onclick = () => { H.sizeKey = key; H.customSize = null; markTypes(); generateHold(); };
+    b.onclick = () => { H.sizeKey = key; H.customSize = null; P.active = false; markTypes(); generateHold(); };
     $("sizes").appendChild(b);
   });
   markTypes();
-  for (const id of ["difficulty", "wall"]) $(id).addEventListener("input", () => { holdLabels(); clearTimeout(H.timer); H.timer = setTimeout(generateHold, 300); });
+  // Type, size, difficulty and descriptions make a new generated hold; wall angle and variation re-rate an edited profile.
+  for (const id of ["difficulty", "wall"]) $(id).addEventListener("input", () => {
+    if (id === "difficulty") P.active = false;
+    holdLabels(); clearTimeout(H.timer); H.timer = setTimeout(generateHold, 300);
+  });
   $("rotation").addEventListener("input", () => { holdLabels(); clearTimeout(H.timer); H.timer = setTimeout(rotateHold, 150); });
   $("seed").addEventListener("change", generateHold);
   $("randomise").onclick = () => { $("seed").value = String(Math.floor(Math.random() * 1e6)); generateHold(); };
@@ -169,7 +173,7 @@ function setupHoldControls(info) {
 }
 function markTypes() {
   [...$("types").children].forEach((b, i) => b.classList.toggle("on", i === H.typeIndex));
-  [...$("sizes").children].forEach((b) => b.classList.toggle("on", !H.customSize && b.textContent === H.sizeKey));
+  [...$("sizes").children].forEach((b) => b.classList.toggle("on", !P.active && !H.customSize && b.textContent === H.sizeKey));
   $("type-info").textContent = H.info.info[H.info.types[H.typeIndex]];
 }
 function holdLabels() {
@@ -186,12 +190,14 @@ document.querySelectorAll(".presets").forEach((row) => row.querySelectorAll("but
 }));
 
 async function generateHold() {
+  if (P.active) return applyProfile();
   const spec = { type: H.info.types[H.typeIndex], difficulty: $("difficulty").value / 10, seed: $("seed").value || "0",
                  wall_angle: +$("wall").value, size: H.customSize || H.info.sizes[H.sizeKey], rotation: +$("rotation").value };
   await runHold(() => rpc("generate_hold", [spec]));
 }
 async function describeHold() {
   const text = $("description").value.trim();
+  P.active = false;
   if (text) await runHold(() => rpc("generate_hold", [{ description: text, seed: $("seed").value || "0", rotation: +$("rotation").value }]));
 }
 async function runHold(call, pull = null) {
@@ -211,6 +217,7 @@ async function rotateHold() {
 function showHold(hold, pull = null, sameShape = false, note = "") {
   const sameType = H.hold && H.hold.type === hold.type;
   H.hold = hold;
+  P.active = !!hold.profile;
   // Controls follow the hold (e.g. after a description or an inspected route hold).
   H.typeIndex = H.info.types.indexOf(hold.type);
   $("difficulty").value = Math.round(hold.target * 10);
@@ -223,14 +230,16 @@ function showHold(hold, pull = null, sameShape = false, note = "") {
   markTypes(); holdLabels();
   const mm = hold.extents.map((v) => v.toFixed(0)).join(" × "), inch = hold.extents.map((v) => (v / 25.4).toFixed(1)).join(" × ");
   $("size-info").textContent = `${mm} mm (${inch} in)` + (hold.size === 1 ? "" : ` · body × ${hold.size.toFixed(2)}`);
-  $("reach").textContent = `A ${hold.type} with this variation reaches ${hold.achievable[0].toFixed(1)}–${hold.achievable[1].toFixed(1)} on a ${wallText(hold.wall_angle).toLowerCase()} wall.`;
+  $("reach").textContent = P.active ? "Edited profile: its difficulty is measured from the shape, so the difficulty slider makes a new generated hold." : `A ${hold.type} with this variation reaches ${hold.achievable[0].toFixed(1)}–${hold.achievable[1].toFixed(1)} on a ${wallText(hold.wall_angle).toLowerCase()} wall.`;
   $("hold-message").textContent = [note, ...hold.notes.map((n) => `⚠ ${n}`)].filter(Boolean).join("\n");
   const pocket = hold.fingers ? `<br>${hold.fingers}-finger pocket, ${hold.pocket_depth.toFixed(0)} mm deep` : "";
-  const what = hold.library ? `<b>${escape(hold.name)}</b> · library hold, rated as a ${hold.type}` : `<b>${capital(hold.type)}</b>, variation ${escape(hold.seed)}`;
+  const what = hold.library ? `<b>${escape(hold.name)}</b> · library hold, rated as a ${hold.type}`
+    : hold.profile ? `<b>Edited profile</b>, gripped like a ${hold.type}, variation ${escape(hold.seed)}` : `<b>${capital(hold.type)}</b>, variation ${escape(hold.seed)}`;
   $("details").innerHTML = `${what}${hold.drilled ? " · drilled" : ""}<br>` +
     `${mm} mm (${inch} in) · ${hold.volume_cm3.toFixed(0)} cm³<br>Holding area ${hold.holding_area.toFixed(0)} mm² straight down${pocket}`;
   $("export-hold").disabled = false;
   $("save-hold").disabled = !!hold.library;
+  $("profile-from-hold").disabled = !!hold.library;
   const { lo, hi } = { lo: hold.pull.min, hi: hold.pull.max };
   const turned = hold.rotation ? ` with the hold turned ${rotationText(hold.rotation)}` : "";
   $("range-text").innerHTML = `<b>${lo.toFixed(1)} – ${hi.toFixed(1)}</b> for pulls within ${hold.pull.cone_deg.toFixed(0)}° of straight down${turned} (dashed line in the chart).`;
@@ -359,6 +368,245 @@ chart.addEventListener("mousemove", (e) => {
   chart.title = cell ? `${pullText(p.around_deg[cell[1]])}, ${p.outward_deg[cell[0]]}° from the wall: difficulty ${p.difficulty[cell[0]][cell[1]].toFixed(1)}\nClick to show its heat map` : "";
 });
 chart.addEventListener("click", (e) => { const cell = chartCell(e); if (cell) showPull(H.hold.pull.around_deg[cell[1]], H.hold.pull.outward_deg[cell[0]]); });
+
+// ---- profile editor ---------------------------------------------------------------------------------------
+// The hold's side section (wall on the left, up the wall upward): control points [y, z, corner radius] in mm
+// from the bottom wall corner over the front to the top one. Each edit lofts and re-rates the hold
+// (webapi.custom_hold); the difficulty is measured, not targeted.
+const P = { points: null, width: 100, outline: 2.5, texture: .9, type: "jug", sel: -1, drag: null, frame: null,
+            history: [], editing: false, timer: 0, active: false };
+const profileCanvas = $("profile-canvas");
+
+function setupProfileControls(info) {
+  for (const id of ["profile-shape", "profile-type"])
+    info.types.forEach((type) => $(id).appendChild(Object.assign(document.createElement("option"), { value: type, textContent: capital(type) })));
+  $("profile-from-hold").onclick = async () => {
+    if (!H.hold) return;
+    try { loadProfile(await rpc("hold_profile", [H.hold.id])); } catch (error) { $("profile-message").textContent = `⚠ ${error.message.replace(/^\w+Error: /, "")}`; $("profile-editor").hidden = false; }
+  };
+  $("profile-from-shape").onclick = async () => loadProfile(await rpc("shape_profile", [$("profile-shape").value, $("seed").value || "0"]));
+  $("profile-type").onchange = () => { beginEdit(); P.type = $("profile-type").value; edited(); };
+  $("profile-remove").onclick = removePoint;
+  $("profile-undo").onclick = undoProfile;
+  $("profile-radius").addEventListener("input", () => {
+    if (!interior(P.sel)) return;
+    beginEdit(); P.points[P.sel][2] = +$("profile-radius").value; edited();
+  });
+  const slider = (id, apply) => $(id).addEventListener("input", () => { beginEdit(); apply(+$(id).value); edited(); });
+  slider("profile-width", (v) => { P.width = v; });
+  slider("profile-outline", (v) => { P.outline = v; });
+  slider("profile-texture", (v) => { P.texture = v; });
+  slider("profile-height", (v) => {
+    const a = P.points[0][0], b = P.points.at(-1)[0], c = (a + b) / 2, f = v / Math.max(b - a, 1);
+    P.points.forEach((p) => { p[0] = c + (p[0] - c) * f; });
+  });
+  slider("profile-depth", (v) => {
+    const f = v / Math.max(...P.points.map((p) => p[1]));
+    P.points.forEach((p) => { p[1] *= f; });
+  });
+  profileCanvas.addEventListener("pointerdown", profileDown);
+  profileCanvas.addEventListener("pointermove", profileMove);
+  profileCanvas.addEventListener("pointerup", profileUp);
+  profileCanvas.addEventListener("pointercancel", profileUp);
+  profileCanvas.addEventListener("dblclick", addPoint);
+  profileCanvas.addEventListener("keydown", profileKey);
+  new ResizeObserver(() => P.points && drawProfile()).observe(profileCanvas);
+}
+function loadProfile(profile) {
+  P.points = profile.points.map((p) => [...p]);
+  Object.assign(P, { width: profile.width, outline: profile.outline, texture: profile.texture, type: profile.type,
+                     sel: -1, history: [], editing: false, frame: null });
+  $("profile-editor").hidden = false;
+  $("profile-message").textContent = "";
+  drawProfile();
+  applyProfile();
+}
+const interior = (i) => P.points && i > 0 && i < P.points.length - 1;
+const profileState = () => JSON.stringify({ points: P.points, width: P.width, outline: P.outline, texture: P.texture, type: P.type });
+function beginEdit() {
+  // One undo step per gesture: the state before the first change since the last re-rating.
+  if (P.editing) return;
+  P.editing = true;
+  P.history.push(profileState());
+  if (P.history.length > 50) P.history.shift();
+}
+function edited(delay = 350) {
+  drawProfile();
+  clearTimeout(P.timer);
+  if (!P.drag) P.timer = setTimeout(applyProfile, delay);
+}
+function undoProfile() {
+  if (!P.history.length) return;
+  Object.assign(P, JSON.parse(P.history.pop()), { sel: -1, editing: false });
+  drawProfile();
+  applyProfile();
+}
+async function applyProfile() {
+  clearTimeout(P.timer);
+  P.editing = false;
+  const spec = { points: P.points, width: P.width, outline: P.outline, texture: P.texture, type: P.type,
+                 seed: $("seed").value || "0", wall_angle: +$("wall").value, rotation: +$("rotation").value };
+  const no = ++H.requestNo;
+  try {
+    const hold = await busy("Rating the edited profile…", () => rpc("custom_hold", [spec]));
+    if (no !== H.requestNo) return;
+    $("profile-message").textContent = "";
+    showHold(hold, H.pull);
+  } catch (error) { if (no === H.requestNo) $("profile-message").textContent = `⚠ ${error.message.replace(/^\w+Error: /, "")}`; }
+}
+function syncProfileControls() {
+  const ys = P.points.map((p) => p[0]), height = P.points.at(-1)[0] - P.points[0][0], depth = Math.max(...P.points.map((p) => p[1]));
+  const set = (id, value, text) => { $(id).value = value; $(`${id}-value`).textContent = text; };
+  set("profile-width", P.width, `${P.width.toFixed(0)} mm`);
+  set("profile-height", height, `${height.toFixed(0)} mm` + (Math.max(...ys) - Math.min(...ys) > height + .5 ? ` (${(Math.max(...ys) - Math.min(...ys)).toFixed(0)} overall)` : ""));
+  set("profile-depth", depth, `${depth.toFixed(0)} mm`);
+  set("profile-outline", P.outline, P.outline.toFixed(1));
+  set("profile-texture", P.texture, P.texture.toFixed(2));
+  $("profile-type").value = P.type;
+  const on = interior(P.sel);
+  $("profile-radius").disabled = !on;
+  $("profile-radius").value = on ? P.points[P.sel][2] : 0;
+  $("profile-radius-value").textContent = on ? `${P.points[P.sel][2].toFixed(1)} mm` : "–";
+  $("profile-remove").disabled = !on || P.points.length <= 3;
+  $("profile-undo").disabled = !P.history.length;
+}
+
+// Rounded outline as shapes._round_poly draws it, so the editor shows the section the hold is lofted from.
+function roundPoly(pts, seg = 5) {
+  const out = [[pts[0][0], pts[0][1]]];
+  for (let i = 1; i < pts.length - 1; i++) {
+    const [y0, z0] = pts[i - 1], [y1, z1, r0] = pts[i], [y2, z2] = pts[i + 1];
+    const v1 = [y0 - y1, z0 - z1], v2 = [y2 - y1, z2 - z1], l1 = Math.hypot(...v1), l2 = Math.hypot(...v2);
+    let r = r0;
+    if (r <= 1e-6 || l1 < 1e-9 || l2 < 1e-9) { out.push([y1, z1]); continue; }
+    const u1 = [v1[0] / l1, v1[1] / l1], u2 = [v2[0] / l2, v2[1] / l2];
+    const ang = Math.acos(Math.min(1, Math.max(-1, u1[0] * u2[0] + u1[1] * u2[1])));
+    if (ang < 1e-3 || ang > Math.PI - 1e-3) { out.push([y1, z1]); continue; }
+    let t = r / Math.tan(ang / 2);
+    if (t > .5 * Math.min(l1, l2)) { t = .5 * Math.min(l1, l2); r = t * Math.tan(ang / 2); }
+    const b = [u1[0] + u2[0], u1[1] + u2[1]], bl = Math.hypot(...b), m = r / Math.sin(ang / 2) / bl;
+    const c = [y1 + b[0] * m, z1 + b[1] * m];
+    const a1 = Math.atan2(y1 + u1[0] * t - c[0], z1 + u1[1] * t - c[1]), a2 = Math.atan2(y1 + u2[0] * t - c[0], z1 + u2[1] * t - c[1]);
+    const d = ((a2 - a1 + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
+    const n = Math.max(2, Math.ceil(Math.abs(d) / (Math.PI / 2) * seg));
+    for (let k = 0; k <= n; k++) { const a = a1 + d * k / n; out.push([c[0] + r * Math.sin(a), c[1] + r * Math.cos(a)]); }
+  }
+  out.push([pts.at(-1)[0], pts.at(-1)[1]]);
+  return out;
+}
+function profileFrame(w, h) {
+  // Equal scale in both directions, with room to drag outward; kept still while a point is dragged.
+  const ys = P.points.map((p) => p[0]), y0 = Math.min(...ys), y1 = Math.max(...ys), z1 = Math.max(...P.points.map((p) => p[1]), 5);
+  const left = 40, pad = 18, s = .82 * Math.min((w - left - pad) / z1, (h - 2 * pad) / Math.max(y1 - y0, 5));
+  return { s, ox: left, oy: h / 2 + (y0 + y1) / 2 * s };
+}
+const toScreen = (f, y, z) => [f.ox + z * f.s, f.oy - y * f.s];
+const fromScreen = (f, x, y) => [(f.oy - y) / f.s, (x - f.ox) / f.s];
+function drawProfile() {
+  if (!P.points) return;
+  const [ctx, w, h] = fitCanvas(profileCanvas);
+  const f = P.drag ? P.frame : (P.frame = profileFrame(w, h));
+  ctx.clearRect(0, 0, w, h);
+  // 10 mm grid
+  ctx.strokeStyle = "rgba(152,170,169,.10)"; ctx.lineWidth = 1; ctx.beginPath();
+  const step = 10 * f.s;
+  for (let x = f.ox; x < w; x += step) { ctx.moveTo(x, 0); ctx.lineTo(x, h); }
+  for (let y = f.oy % step; y < h; y += step) { ctx.moveTo(f.ox, y); ctx.lineTo(w, y); }
+  ctx.stroke();
+  // wall
+  ctx.strokeStyle = "#7f9796"; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(f.ox, 0); ctx.lineTo(f.ox, h); ctx.stroke();
+  ctx.fillStyle = "#98aaa9"; ctx.font = "11px Segoe UI, system-ui, sans-serif";
+  ctx.save(); ctx.translate(f.ox - 8, h / 2); ctx.rotate(-Math.PI / 2); ctx.textAlign = "center"; ctx.fillText("Wall", 0, 0); ctx.restore();
+  // rounded section, closed along the wall
+  const curve = roundPoly(P.points).map(([y, z]) => toScreen(f, y, z));
+  ctx.beginPath(); curve.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.closePath();
+  ctx.fillStyle = "rgba(64,124,103,.45)"; ctx.fill();
+  ctx.strokeStyle = "#9edbc1"; ctx.lineWidth = 2; ctx.stroke();
+  // control polygon and points
+  const pts = P.points.map(([y, z]) => toScreen(f, y, z));
+  ctx.setLineDash([4, 4]); ctx.strokeStyle = "rgba(201,214,212,.55)"; ctx.lineWidth = 1; ctx.beginPath();
+  pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke(); ctx.setLineDash([]);
+  pts.forEach(([x, y], i) => {
+    const on = i === P.sel, end = !interior(i);
+    ctx.fillStyle = end ? "#c9d6d4" : "#f4d03f"; ctx.strokeStyle = on ? "#ffffff" : "#15242b"; ctx.lineWidth = on ? 2.5 : 1.5;
+    ctx.beginPath();
+    if (end) ctx.rect(x - 5, y - 5, 10, 10); else ctx.arc(x, y, on ? 7 : 6, 0, Math.PI * 2);
+    ctx.fill(); ctx.stroke();
+  });
+  const height = P.points.at(-1)[0] - P.points[0][0], depth = Math.max(...P.points.map((p) => p[1]));
+  ctx.fillStyle = "#98aaa9"; ctx.textAlign = "right";
+  ctx.fillText(`H ${height.toFixed(0)} mm · D ${depth.toFixed(0)} mm · W ${P.width.toFixed(0)} mm`, w - 8, h - 8);
+  ctx.textAlign = "left";
+  syncProfileControls();
+}
+function canvasXY(e) { const r = profileCanvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
+function pointAt(x, y) {
+  let best = -1, dist = 11;
+  P.points.forEach(([py, pz], i) => { const [sx, sy] = toScreen(P.frame, py, pz), d = Math.hypot(sx - x, sy - y); if (d < dist) { dist = d; best = i; } });
+  return best;
+}
+function profileDown(e) {
+  if (!P.points) return;
+  profileCanvas.focus();
+  const [x, y] = canvasXY(e);
+  P.sel = pointAt(x, y);
+  if (P.sel >= 0) { P.drag = { moved: false }; profileCanvas.setPointerCapture(e.pointerId); }
+  drawProfile();
+}
+function profileMove(e) {
+  if (!P.points) return;
+  const [x, y] = canvasXY(e);
+  if (!P.drag) { profileCanvas.style.cursor = pointAt(x, y) >= 0 ? "grab" : "crosshair"; return; }
+  if (!P.drag.moved) { beginEdit(); P.drag.moved = true; }
+  const [py, pz] = fromScreen(P.frame, x, y), p = P.points[P.sel];
+  p[0] = Math.round(py * 2) / 2;
+  if (interior(P.sel)) p[1] = Math.max(1, Math.round(pz * 2) / 2);     // the ends stay on the wall
+  profileCanvas.style.cursor = "grabbing";
+  edited();
+}
+function profileUp() {
+  if (!P.drag) return;
+  const moved = P.drag.moved;
+  P.drag = null;
+  if (moved) edited(0); else drawProfile();
+}
+function addPoint(e) {
+  if (!P.points) return;
+  const [x, y] = canvasXY(e), f = P.frame;
+  let best = -1, dist = 9, at = null;
+  for (let i = 0; i < P.points.length - 1; i++) {
+    const [ax, ay] = toScreen(f, P.points[i][0], P.points[i][1]), [bx, by] = toScreen(f, P.points[i + 1][0], P.points[i + 1][1]);
+    const dx = bx - ax, dy = by - ay, t = Math.min(1, Math.max(0, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy || 1)));
+    const d = Math.hypot(ax + t * dx - x, ay + t * dy - y);
+    if (d < dist) { dist = d; best = i; at = [ax + t * dx, ay + t * dy]; }
+  }
+  if (best < 0) return;
+  beginEdit();
+  const [py, pz] = fromScreen(f, ...at);
+  P.points.splice(best + 1, 0, [Math.round(py * 2) / 2, Math.max(1, Math.round(pz * 2) / 2), 0]);
+  P.sel = best + 1;
+  edited(0);
+}
+function removePoint() {
+  if (!interior(P.sel) || P.points.length <= 3) return;
+  beginEdit();
+  P.points.splice(P.sel, 1);
+  P.sel = -1;
+  edited(0);
+}
+function profileKey(e) {
+  if (!P.points) return;
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); undoProfile(); return; }
+  if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); removePoint(); return; }
+  const move = { ArrowUp: [1, 0], ArrowDown: [-1, 0], ArrowRight: [0, 1], ArrowLeft: [0, -1] }[e.key];
+  if (!move || P.sel < 0) return;
+  e.preventDefault();
+  beginEdit();
+  const k = e.shiftKey ? 5 : 1, p = P.points[P.sel];
+  p[0] += move[0] * k;
+  if (interior(P.sel)) p[1] = Math.max(1, p[1] + move[1] * k);
+  edited();
+}
 
 // =========================================================================================================
 // Route view
@@ -896,7 +1144,7 @@ async function showLibraryHold() {
 }
 async function saveToLibrary() {
   if (!H.hold) return;
-  const suggested = `${capital(H.hold.type)} ${H.hold.difficulty.toFixed(1)} (variation ${H.hold.seed})`;
+  const suggested = `${H.hold.profile ? `Edited ${H.hold.type}` : capital(H.hold.type)} ${H.hold.difficulty.toFixed(1)} (variation ${H.hold.seed})`;
   const name = prompt("Save to library as:", suggested);
   if (name === null) return;
   const entry = await busy("Saving to the library…", () => rpc("library_save", [H.hold.id, name.trim() || suggested]));
@@ -905,13 +1153,14 @@ async function saveToLibrary() {
   await refreshLibrary(null, [entry.id]);
 }
 
-window.rockform = { H, R, L };       // for debugging from the console
+window.rockform = { H, R, L, P };       // for debugging from the console
 
 async function started() {
   const info = await rpc("info");
   info.icons = {};
   for (const type of info.types) info.icons[type] = await rpc("hold_icon", [type]);
   setupHoldControls(info);
+  setupProfileControls(info);
   setupRouteControls(info);
   setupLibraryControls(info);
   await refreshLibrary();

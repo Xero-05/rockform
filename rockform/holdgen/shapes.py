@@ -220,10 +220,14 @@ def _fingers(hardness, draw):
     return (2 if draw < .5 else 3) if hardness < 2 / 3 else (1 if draw < .5 else 2)
 
 
-def build(hold_type, hardness, seed=0, size=1., fingers=None):
-    """Return (trimesh, parameters) for a closed solid with outward normals. `size` scales the body
-    (1 = the published dimensions; see SIZES). `fingers` fixes a pocket's finger count (default: from
-    hardness)."""
+def _texture(hardness):
+    """Surface bump amplitude: rougher on harder holds, as in the reference generator."""
+    return float(np.interp(hardness, (0., .5, 1.), (.5, .9, 1.4)))
+
+
+def _shape(hold_type, hardness, seed, size, fingers):
+    """Dimensions, parameters and profile builder of one generated hold, plus the X its middle section is
+    taken at (a pocket's hole centre, else 0)."""
     if hold_type not in SPECS:
         raise ValueError(f"Unknown hold type {hold_type!r}; choose one of {', '.join(HOLD_TYPES)}.")
     var = Variation(seed)
@@ -239,6 +243,7 @@ def build(hold_type, hardness, seed=0, size=1., fingers=None):
     params = dict(type=hold_type, hardness=float(hardness), seed=str(seed), size=float(size),
                   **{k: round(float(v), 3) for k, v in S.items()})
 
+    x0 = 0.
     if hold_type == "jug":
         prof = _jug(S)
     elif hold_type in ("crimp", "edge"):
@@ -253,10 +258,106 @@ def build(hold_type, hardness, seed=0, size=1., fingers=None):
                       xc=.10 * var.pocket[0] * S["W"], yp=.5 + .4 * var.pocket[1])
         prof = _pocket(S, pocket)
         params.update(fingers=fingers, pocket_depth=round(pocket["d"], 3))
+        x0 = pocket["xc"]
+    return var, S, params, prof, x0
 
-    p, ax, Dn = S["p"], S["W"] / 2., S["D"]
-    # Rougher texture on harder holds, as in the reference generator.
-    amp = float(np.interp(hardness, (0., .5, 1.), (.5, .9, 1.4))) * min(1., Dn / 25.)
+
+def build(hold_type, hardness, seed=0, size=1., fingers=None):
+    """Return (trimesh, parameters) for a closed solid with outward normals. `size` scales the body
+    (1 = the published dimensions; see SIZES). `fingers` fixes a pocket's finger count (default: from
+    hardness)."""
+    var, S, params, prof, _x0 = _shape(hold_type, hardness, seed, size, fingers)
+    amp = _texture(hardness) * min(1., S["D"] / 25.)
+    return _loft(prof, S["W"], S["H"], S["D"], S["p"], amp, var), params
+
+
+def _simplify(poly, tolerance):
+    """Ramer-Douglas-Peucker: the indices of the points that keep a polyline within `tolerance`."""
+    keep, stack = {0, len(poly) - 1}, [(0, len(poly) - 1)]
+    while stack:
+        a, b = stack.pop()
+        if b - a < 2:
+            continue
+        d = poly[b] - poly[a]
+        rel = poly[a + 1:b] - poly[a]
+        dist = np.abs(d[0] * rel[:, 1] - d[1] * rel[:, 0]) / max(np.linalg.norm(d), 1e-9)
+        k = int(np.argmax(dist))
+        if dist[k] > tolerance:
+            keep.add(a + 1 + k)
+            stack += [(a, a + 1 + k), (a + 1 + k, b)]
+    return sorted(keep)
+
+
+def section(hold_type, hardness, seed=0, size=1., fingers=None):
+    """The middle side section of a generated hold (through a pocket's hole), as the profile editor's
+    starting point: control points [y, z, corner radius] in mm from the bottom wall corner over the front
+    to the top one, plus the width, outline exponent and texture that `build_profile` lofts it with.
+    Smooth profiles (a sloper's superellipse) are thinned to a few fully rounded corners."""
+    var, S, params, prof, x0 = _shape(hold_type, hardness, seed, size, fingers)
+    pts = np.array(prof(S["D"], x0), float)
+    if len(pts) > 12:
+        poly = pts[:, :2]
+        idx = _simplify(poly, 2.)
+        pts = np.column_stack([poly[idx], np.zeros(len(idx))])
+        for i in range(1, len(pts) - 1):        # the largest radius _round_poly can fit at each corner
+            v1, v2 = pts[i - 1, :2] - pts[i, :2], pts[i + 1, :2] - pts[i, :2]
+            l1, l2 = np.linalg.norm(v1), np.linalg.norm(v2)
+            ang = math.acos(float(np.clip(v1 @ v2 / (l1 * l2), -1., 1.)))
+            pts[i, 2] = .5 * min(l1, l2) * math.tan(ang / 2) if ang < math.pi - 1e-3 else 0.
+    return dict(points=np.round(pts, 2).tolist(), width=round(float(S["W"]), 1), outline=round(float(S["p"]), 2),
+                texture=round(_texture(hardness), 2), type=hold_type)
+
+
+def _crosses(poly):
+    """True if two non-neighbouring segments of a polyline cross."""
+    a, d = poly[:-1], np.diff(poly, axis=0)
+    i, j = np.triu_indices(len(a), 2)
+
+    def cross(u, v):
+        return u[:, 0] * v[:, 1] - u[:, 1] * v[:, 0]
+    r, den = a[j] - a[i], cross(d[i], d[j])
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t, u = cross(r, d[j]) / den, cross(r, d[i]) / den
+    eps = 1e-9
+    return bool(((np.abs(den) > 1e-12) & (t > eps) & (t < 1 - eps) & (u > eps) & (u < 1 - eps)).any())
+
+
+def build_profile(points, width, outline=2.5, texture=.9, seed=0):
+    """Return (trimesh, parameters) for a hold lofted from an edited side profile: `points` are
+    [y, z, corner radius] in mm from the bottom wall corner over the front to the top wall corner (see
+    `section`). The ends are put on the wall and the profile is centred between them. `outline` is the
+    across-the-wall exponent (low = oval, high = boxy) and `texture` the bump amplitude (generated holds use
+    0.5-1.4). The seed adds the same depth wobble, shear and bumps as a generated hold's."""
+    pts = np.array(points, float)
+    if pts.ndim != 2 or pts.shape[1] != 3 or len(pts) < 3:
+        raise ValueError("A profile needs at least three points: two on the wall and one in front of it.")
+    pts[[0, -1], 1] = 0.
+    pts[1:-1, 1] = np.maximum(pts[1:-1, 1], 1.)
+    pts[:, 2] = np.maximum(pts[:, 2], 0.)
+    H, Dn = pts[-1, 0] - pts[0, 0], float(pts[:, 1].max())
+    if H < 10.:
+        raise ValueError("The top wall corner must be at least 10 mm above the bottom one.")
+    if not 10. <= width <= 1000.:
+        raise ValueError("The width must be between 10 and 1000 mm.")
+    pts[:, 0] -= (pts[0, 0] + pts[-1, 0]) / 2
+    if _crosses(_round_poly(pts)):
+        raise ValueError("The profile crosses itself. Move the points so the outline does not cross.")
+    outline = float(np.clip(outline, 1.2, 10.))
+    profile = dict(points=np.round(pts, 2).tolist(), width=round(float(width), 1), outline=round(outline, 2),
+                   texture=round(float(texture), 2))
+    params = dict(type="custom", seed=str(seed), size=1., W=round(float(width), 3), H=round(float(H), 3),
+                  D=round(Dn, 3), p=outline, profile=profile)
+
+    def prof(D, x):
+        return [(y, z * D / Dn, r) for y, z, r in pts]
+    amp = max(float(texture), 0.) * min(1., Dn / 25.)
+    return _loft(prof, float(width), H, Dn, outline, amp, Variation(seed)), params
+
+
+def _loft(prof, W, H, Dn, p, amp, var):
+    """Sweep `prof(D, x)` across the wall (X), narrowing to the sides with exponent `p`, with the seed's
+    depth wobble, shear and bumps of amplitude `amp`. Returns a closed trimesh with outward normals."""
+    ax = W / 2.
     ang, freq, phase, weight = var.bumps.T
     fx, fy, bump_amp = freq * np.cos(ang), freq * np.sin(ang), amp * weight
     columns = []
@@ -270,7 +371,7 @@ def build(hold_type, hardness, seed=0, size=1., fingers=None):
         w = np.sin(math.pi * np.arange(NF) / (NF - 1))
         texture = (bump_amp * np.sin(fx * x + np.outer(yz[:, 0], fy) + phase)).sum(axis=1)
         yz[1:-1, 1] = np.maximum(yz[1:-1, 1] + (w * k * texture)[1:-1], .3)
-        yz[:, 0] += .5 * S["H"] * (var.shear[0] * u + var.shear[1] * (u * u - .4)) * math.sqrt(k)
+        yz[:, 0] += .5 * H * (var.shear[0] * u + var.shear[1] * (u * u - .4)) * math.sqrt(k)
         back_y = yz[-1, 0] + (yz[0, 0] - yz[-1, 0]) * np.arange(1, NB + 1) / (NB + 1.)
         col = np.vstack([yz, np.column_stack([back_y, np.zeros(NB)])])
         columns.append(np.column_stack([np.full(len(col), x), col]))
@@ -289,4 +390,4 @@ def build(hold_type, hardness, seed=0, size=1., fingers=None):
     mesh = trimesh.Trimesh(verts, np.array(faces), process=False)
     if mesh.volume < 0:
         mesh.invert()
-    return mesh, params
+    return mesh
