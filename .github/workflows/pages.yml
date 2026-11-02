@@ -1,0 +1,47 @@
+name: Publish the web app
+
+# Builds web/ (the hold generator and route setter in the browser) and publishes it on GitHub Pages
+# whenever its code changes on main. The page needs only static hosting: Python runs in the browser.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - 'rockform/__init__.py'
+      - 'rockform/model.py'
+      - 'rockform/holdgen/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Package the Python modules the page runs
+        run: python web/build.py
+      - name: Leave the build script out of the site
+        run: rm web/build.py
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+      - id: deployment
+        uses: actions/deploy-pages@v4
