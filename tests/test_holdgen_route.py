@@ -77,6 +77,7 @@ def test_written_layout_is_a_rock_wall_layout(v3_route, tmp_path):
         assert rec["params"]["type"] == "SCAN" and rec["route"] == 1
         assert scan["bolt"] == 0 and scan["drilled"] == rec["params"]["bolt"] > 0    # already drilled
         assert len(scan["bolt_at"]) == 2 and (tmp_path / "holds").exists()
-        assert scan["file"].endswith(".stl") and json.loads(open(scan["file"][:-4] + ".json").read())["placement"]
+        assert scan["file"].startswith("holds/") and (tmp_path / scan["file"]).is_file()      # relative, portable
+        assert json.loads((tmp_path / (scan["file"][:-4] + ".json")).read_text())["placement"]
     assert (tmp_path / "route.svg").read_text().startswith("<svg")
     assert json.loads((tmp_path / "route.json").read_text())["estimated_grade"] == summary["estimated_grade"]

@@ -1742,12 +1742,15 @@ def make_scan_template(context, path, key, axis, unit, max_tris, bolt):
     return mesh
 
 
-def load_scan_template(context, key, info):
-    """Make a library scan from a layout file's scan entry. A 'drilled' scan already has its bolt hole
-    (diameter in mm) at 'bolt_at' (mm from its footprint centre): the hold's origin moves onto that hole
-    instead of a new hole being cut."""
+def load_scan_template(context, key, info, base=""):
+    """Make a library scan from a layout file's scan entry. A relative file path is relative to the layout
+    file's folder (`base`). A 'drilled' scan already has its bolt hole (diameter in mm) at 'bolt_at' (mm from
+    its footprint centre): the hold's origin moves onto that hole instead of a new hole being cut."""
     drilled = float(info.get("drilled", 0.0))
-    mesh = make_scan_template(context, str(info["file"]), key, info.get("axis", "+Z"), float(info.get("scale", 1.0)),
+    path = str(info["file"])
+    if base and not os.path.isabs(path):
+        path = os.path.join(base, path)
+    mesh = make_scan_template(context, path, key, info.get("axis", "+Z"), float(info.get("scale", 1.0)),
                               int(info.get("max_tris", 0)), 0.0 if drilled else float(info.get("bolt", 0.0)))
     if drilled:
         dx, dy = [float(c) for c in info.get("bolt_at", (0.0, 0.0))]
@@ -1840,7 +1843,7 @@ def remove_all_holds(scene):
     return n
 
 
-def apply_layout(context, data, clear=True):
+def apply_layout(context, data, clear=True, base=""):
     """Rebuild the wall, routes and holds from a layout dict. Returns (holds made, list of problems)."""
     global _SUPPRESS
     if not isinstance(data, dict) or data.get("format") != LAYOUT_FORMAT:
@@ -1879,11 +1882,13 @@ def apply_layout(context, data, clear=True):
         if get_scan_template(key) is not None:
             continue
         path = str(info.get("file", ""))
+        if base and path and not os.path.isabs(path):
+            path = os.path.join(base, path)
         if not os.path.isfile(path):
             problems.append(f"scan '{key}': file not found ({path or 'no path saved'})")
             continue
         try:
-            load_scan_template(context, key, info)
+            load_scan_template(context, key, info, base)
         except Exception as exc:
             problems.append(f"scan '{key}': {exc}")
 
@@ -1973,7 +1978,7 @@ def holdgen_command(context, pr, wall, name, out):
     return cmd
 
 
-def add_layout_route(context, data):
+def add_layout_route(context, data, base=""):
     """Add the routes and holds of a layout file to the current wall, keeping everything already there.
     Returns (holds made, list of problems)."""
     if not isinstance(data, dict) or data.get("format") != LAYOUT_FORMAT:
@@ -1995,7 +2000,7 @@ def add_layout_route(context, data):
         while get_scan_template(new_key) is not None:      # a regenerated route gets fresh templates
             new_key, n = f"{key}_{n}", n + 1
         try:
-            load_scan_template(context, new_key, info)
+            load_scan_template(context, new_key, info, base)
             keys[key] = new_key
         except Exception as exc:
             problems.append(f"scan '{key}': {exc}")
@@ -3428,7 +3433,7 @@ class ROCKWALL_OT_generate_route(Operator):
             self.report({"ERROR"}, pr.hg_status + " (full output in the system console)")
             return {"CANCELLED"}
         with open(layout, "r", encoding="utf-8") as f:
-            made, problems = add_layout_route(context, json.load(f))
+            made, problems = add_layout_route(context, json.load(f), os.path.dirname(layout))
         for msg in problems[:8]:
             self.report({"WARNING"}, msg)
         summary = route_summary(pr, pr.route_index)
@@ -3507,7 +3512,7 @@ class ROCKWALL_OT_load_layout(Operator, ImportHelper):
         try:
             with open(self.filepath, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            made, problems = apply_layout(context, data, self.clear_existing)
+            made, problems = apply_layout(context, data, self.clear_existing, os.path.dirname(self.filepath))
         except Exception as exc:
             self.report({"ERROR"}, f"Could not load layout: {exc}")
             return {"CANCELLED"}

@@ -175,6 +175,38 @@ Calibration (seed 3, achievable difficulty from easiest to hardest shape):
 writes it as a layout for the Blender **Rock Wall Builder** add-on ([blender/rock_wall_builder.py](blender/rock_wall_builder.py)).
 The **Route** tab of the window does the same without Blender.
 
+### In the browser
+
+[web/](web/) is the hold generator and route setter as a web page. It has the same Hold and Route views as
+the window. All of it runs in the browser tab:
+
+- **Python:** the hold generator's own Python code runs under [Pyodide](https://pyodide.org) (Python
+  compiled to WebAssembly), in a web worker.
+- **Drilling:** the boolean cuts use [manifold](https://github.com/elalish/manifold)'s WebAssembly build.
+- **3D view:** [three.js](https://threejs.org) draws the holds and the wall.
+
+Nothing is uploaded. The first visit downloads about 30 MB (Python, NumPy, trimesh), which browsers cache.
+A route takes about 10 s to plan, roughly twice the desktop time.
+
+```powershell
+.venv\Scripts\python.exe web\build.py --serve        # packages the Python modules, serves http://localhost:8000
+```
+
+`web/build.py` zips only the modules the page needs: `rockform/model.py` and the `rockform/holdgen`
+generator, rating, drilling, route and `webapi` modules. Any static host can then serve `web/`. Two pieces
+make the generator browser-safe, and the desktop runs the same code:
+
+- `rockform/holdgen/drill.py` finds the surface above a bolt with NumPy vertical rays, where the scan app
+  uses `rtree`. Its cut is pluggable: the desktop uses `manifold3d`, the browser installs manifold's
+  WebAssembly build.
+- `rockform/holdgen/webapi.py` holds the functions the page calls. It has no browser imports, so
+  `tests/test_holdgen_webapi.py` tests it on the desktop.
+
+Holds are dragged as in the Route tab: click a hold to select it, drag it bolt to bolt, and use the wheel
+or Q / E to turn it while dragging. Ctrl+arrows move the selected hold one bolt, and Ctrl+Z undoes a move.
+**Export wall** downloads a ZIP with the route folders and a `layout.json`. File paths in it are relative,
+so the Blender add-on's **Load Layout** opens it wherever it is unzipped.
+
 ### The Route tab
 
 1. **Wall:** width, height, bolt grid and angle (slab to 45°).

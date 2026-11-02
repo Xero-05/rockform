@@ -19,8 +19,8 @@ import json
 import math
 from pathlib import Path
 import numpy as np
-from ..model import GeometryError, Mount, default_profiles
-from ..mounts import _boolean, _cutter, _top_heights
+from ..model import GeometryError, default_profiles
+from .drill import drill
 from .generate import HoldRequest, generate, measure
 from . import shapes
 
@@ -177,44 +177,6 @@ def hardware(kind, bore=None):
     if bore:
         profile.shaft_diameter = bore - profile.clearance
     return profile
-
-
-def _seat_floor(mesh, profile, x, y):
-    """Floor height of a head seat at (x, y), or the reason it does not fit there."""
-    radius = profile.seat_diameter / 2
-    angles = np.linspace(0, 2 * np.pi, 24, endpoint=False)
-    rings = [[[x, y]]] + [np.column_stack([x + r * np.cos(angles), y + r * np.sin(angles)])
-                          for r in (radius / 2, radius, radius + profile.edge_allowance)]
-    heights, hits = _top_heights(mesh, np.vstack(rings))
-    # A ray down through a closed solid hits its front and its back; more hits mean an undercut above the seat.
-    if np.isnan(heights).any() or (hits > 2).any():
-        return None, "an undercut or the hold's edge is in the way of the bolt seat"
-    seat = heights[:1 + 2 * len(angles)]
-    floor = float(seat.min() - profile.recess_depth)
-    if floor < profile.floor_allowance:
-        return None, (f"{seat.min():.1f} mm of material where "
-                      f"{profile.recess_depth + profile.floor_allowance:.1f} mm is needed for the bolt seat")
-    return (floor, float(seat.max())), None
-
-
-def drill(mesh, profile, step=4.):
-    """Cut a hole and head seat with Rockform's mount cutter, as near the footprint centre as it fits: a
-    jug's centre is often under its lip. Returns (drilled mesh, hole (x, y)); the Blender add-on puts the
-    hold's origin, its bolt, there. Raises GeometryError when no spot within a third of the hold fits."""
-    lo, hi = mesh.bounds
-    centre = (lo[:2] + hi[:2]) / 2
-    half = (hi[:2] - lo[:2]) / 3
-    grid = np.stack(np.meshgrid(np.arange(-half[0], half[0] + 1e-9, step), np.arange(-half[1], half[1] + 1e-9, step)),
-                    -1).reshape(-1, 2)
-    reason = None
-    for offset in grid[np.argsort(np.hypot(*grid.T))][:120]:
-        x, y = centre + offset
-        fit, why = _seat_floor(mesh, profile, x, y)
-        reason = reason or why
-        if fit:
-            cutter = _cutter(Mount(float(x), float(y), profile), *fit, profile.seat_diameter / 2)
-            return _boolean([mesh, cutter], "difference"), np.array([x, y])
-    raise GeometryError(f"no spot near the centre takes the bolt seat ({reason})")
 
 
 def _types_for(target, rng, previous):
@@ -425,9 +387,9 @@ def write_route(holds, summary, wall, out, route_name="Generated route", color=N
     for n, h in enumerate(holds):
         mesh = h.hold.mesh
         stem = f"{n + 1:02d}_{h.role.lower()}_{h.hold_type}_d{h.difficulty:.1f}"
-        path = (out / "holds" / f"{stem}.stl").resolve()
+        path = out / "holds" / f"{stem}.stl"
         mesh.export(path)
-        h.file = str(path)
+        h.file = f"holds/{stem}.stl"        # relative to layout.json, so the folder can be moved or shared
         record = h.record()
         (out / "holds" / f"{stem}.json").write_text(json.dumps(dict(placement=record, hold=h.report), indent=2),
                                                     encoding="utf-8")
@@ -435,7 +397,7 @@ def write_route(holds, summary, wall, out, route_name="Generated route", color=N
         key = f"{key_base}_{n + 1:02d}_{h.hold_type}"
         w, hh, d = h.size_mm
         # The hole is already in the STL: 'drilled' tells the add-on not to cut another.
-        scans[key] = dict(file=str(path), axis="+Z", scale=1.0, max_tris=0, bolt=0., drilled=h.hole_mm,
+        scans[key] = dict(file=h.file, axis="+Z", scale=1.0, max_tris=0, bolt=0., drilled=h.hole_mm,
                           bolt_at=h.hole_at)
         layout_holds.append(dict(
             params=dict(type="SCAN", scan=key, w=w, h=hh, d=d, rough=0., seed=0, crimp=0., pocket_dia=0.,
@@ -464,6 +426,8 @@ def write_wall(routes, wall, out):
         layout = json.loads(write_route(holds, summary, wall, out / folder, name, color).read_text(encoding="utf-8"))
         for rec in layout["holds"]:
             rec["route"] = n
+        for scan in layout["scans"].values():
+            scan["file"] = f"{folder}/{scan['file']}"        # relative to the wall's layout.json
         if combined is None:
             combined = layout
         else:
