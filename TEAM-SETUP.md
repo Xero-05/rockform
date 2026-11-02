@@ -6,17 +6,20 @@ credentials are kept outside Git. All scan processing stays on your computer.
 
 ## Get access
 
-The repository owner can invite teammates from **Settings → Collaborators →
-Add people**. Accept the invitation while signed in to your own GitHub account.
-Use your own account for commits; never share a GitHub password or token.
+The repository is public: anyone can read the source and download releases
+without signing in. To push branches, the repository owner invites you from
+**Settings → Collaborators → Add people**. Accept the invitation while signed
+in to your own GitHub account. Use your own account for commits; never share a
+GitHub password or token. Contributions are released under the MIT
+[license](LICENSE).
 
 ## Use the Windows app without installing development tools
 
 For a published version, open [Releases](https://github.com/Xero-05/rockform/releases),
-download **Rockform-0.1.9-Windows-x64.zip**, extract the whole folder, and open
-**Rockform.exe**. Choose the Windows ZIP asset, not GitHub's source-code ZIP.
-Read **START-HERE.txt** inside the download. Teammates must be signed in and have
-repository access to download a private release.
+download the latest **Rockform-<version>-Windows-x64.zip** (or
+**RockformHoldgen-<version>-Windows-x64.zip** for the hold generator and route
+setter), extract the whole folder, and open the `.exe`. Choose the Windows ZIP
+asset, not GitHub's source-code ZIP. Read **START-HERE.txt** inside the download.
 
 To build a newer development snapshot:
 

@@ -1,23 +1,62 @@
 # Rockform
 
-A local Windows app for turning iPhone rock-surface meshes into printable **shape and mounting prototypes**. Imports phone scans; it does not directly operate the iPhone LiDAR sensor. No Mac or cloud account is required.
+Tools for designing printable climbing holds and setting them on a wall, as **shape and mounting prototypes**.
+Everything runs locally on Windows; no Mac or cloud account is required.
 
-**Joining the project? Start with [TEAM-SETUP.md](TEAM-SETUP.md)** for GitHub access,
-a Windows app download, source setup, and the team's pull-request workflow.
-The source repository excludes personal scans, local tools, and packaged binaries.
+- **Rockform (scan to hold):** turns iPhone rock-surface scans into printable holds. It covers scan repair,
+  natural-feature extraction and adjustable bolt and screw mounts. It imports phone scans and does not operate
+  the iPhone LiDAR sensor itself.
+- **Hold generator and route setter:** generates holds of six types to a measured difficulty and sets graded
+  boulder routes of them on a wall. Each hold is drilled for its bolt, turned to face the climber's pull and
+  rated as placed. Drag holds bolt to bolt in 3D and the route is re-rated. See [HOLDGEN.md](HOLDGEN.md).
+- **Blender Rock Wall Builder add-on** ([blender/rock_wall_builder.py](blender/rock_wall_builder.py)):
+  parametric holds and walls, route tags, a setter's sheet and manufacturing checks. It loads walls exported
+  by the route setter.
+- **iPhone capture companion** ([iphone/README.md](iphone/README.md)): Swift source for LiDAR capture. It
+  isn't part of the Windows downloads.
 
-## Open the application
+## Download
 
-For the portable Windows download, open [GitHub Releases](https://github.com/Xero-05/rockform/releases)
-and select the **Windows-x64.zip** asset. Extract the whole archive and run
-**Rockform.exe**; no Python installation is needed. The repository is private,
-so teammates need access before downloading. See **START-HERE.txt** inside the ZIP.
+Portable Windows builds are on [GitHub Releases](https://github.com/Xero-05/rockform/releases). Choose the
+**Windows-x64.zip** asset (not GitHub's source-code ZIP), extract the whole archive and run the `.exe`.
+No Python installation is needed. Keep the `_internal` folder beside the executable.
+
+| App | Release | Executable |
+| --- | --- | --- |
+| Rockform (scan to hold) | [latest](https://github.com/Xero-05/rockform/releases/latest) | `Rockform.exe` |
+| Hold generator and route setter | [holdgen-v0.2.0](https://github.com/Xero-05/rockform/releases/tag/holdgen-v0.2.0) (pre-release) | `RockformHoldgen.exe` |
+
+The executables are not code-signed, so Windows may report an unknown publisher. Each ZIP contains
+**START-HERE.txt**, a `build-info.json` naming its source commit, and the notices of its bundled libraries.
+
+**Contributing? Start with [TEAM-SETUP.md](TEAM-SETUP.md)** for source setup and the pull-request workflow.
+The repository excludes personal scans, local tools and packaged binaries. For the architecture, geometry
+algorithms, data formats, internal APIs and build process, see the
+[Rockform Technical Report](ROCKFORM-TECHNICAL-REPORT.md).
+
+## Hold generator and route setter
+
+```powershell
+.venv\Scripts\python.exe -m rockform.holdgen.app                                   # Hold and Route tabs
+.venv\Scripts\python.exe -m rockform.holdgen "hard crimp on a 30 degree overhang"   # one hold: STL + report
+.venv\Scripts\python.exe -m rockform.holdgen.route --grade V3 --wall-angle 20       # one route: STLs + layout
+```
+
+- **Hold tab:** pick a type, size, difficulty and wall angle, or describe the hold in words. A grip heat map
+  and a pull-angle chart show how the difficulty changes with the direction of pull.
+- **Route tab:** set a wall, add V0–V8 routes and move holds by dragging them in the 3D view (wheel or Q / E
+  turns them). Export STLs, reports, a front-view SVG and a `layout.json` for the Blender add-on.
+
+Difficulty is a holding-area proxy and the route grade is a prototype heuristic. Neither is calibrated on
+climbers. [HOLDGEN.md](HOLDGEN.md) explains both and their limits.
+
+## Open the scan app
 
 Double-click **`dist\Rockform\Rockform.exe`**, or **`Start Rockform.cmd`** in this folder. Keep the complete `Rockform` folder together when copying it to another computer. The packaged application includes its Python runtime and libraries.
 
 For development, run `.venv\Scripts\python.exe -m rockform.app`.
 
-A lightweight custom iPhone capture companion is now available as source in [`iphone/README.md`](iphone/README.md). It includes LiDAR scanning, a synthetic demo for phones without LiDAR, and reference photos. Read its setup and validation notes: Apple SDK compilation, signing, and phone testing are separate from the verified Windows application.
+The iPhone capture companion in [`iphone/README.md`](iphone/README.md) includes LiDAR scanning, a synthetic demo for phones without LiDAR, and reference photos. Read its setup and validation notes: Apple SDK compilation, signing, and phone testing are separate from the verified Windows application.
 
 ## First workflow
 
@@ -109,3 +148,20 @@ The test suite covers extraction, both mount modes, actual through-holes, profil
 ## Field validation still required
 
 Use three real rock scans, record their reference measurements, export selected holds, and confirm each in a slicer without repair. Print at least one shape prototype and compare its dimensions and contact surface with the source. Record scanner error separately from printer error. This software project cannot substitute synthetic fixtures for those physical checks.
+
+## Safety
+
+Rockform's outputs are prototypes for shape and mounting experiments. They are not qualified climbing
+equipment. Before anyone climbs on a printed or cast hold, qualify its material, print orientation,
+mounting hardware and the whole wall assembly under repeated loads. An export or manufacturing check is
+not that qualification.
+
+## License
+
+Rockform is released under the [MIT License](LICENSE).
+
+The hold generator's lofted hold profiles and their Easy, Medium and Hard dimension tables are adapted from
+[ekamveer241/Climbing-Holds](https://github.com/ekamveer241/Climbing-Holds) by a project teammate, and are used
+here with their agreement. Release ZIPs bundle third-party libraries (Qt for Python, VTK, NumPy, SciPy,
+trimesh, manifold3d and others). Those libraries keep their own licenses, listed in each ZIP's
+`THIRD-PARTY-NOTICES.md` and `licenses/` folder.
