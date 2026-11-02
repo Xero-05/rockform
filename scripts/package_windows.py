@@ -12,6 +12,7 @@ from importlib import metadata
 import json
 from pathlib import Path
 import platform
+import re
 import subprocess
 import sys
 import tomllib
@@ -20,22 +21,38 @@ from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
 ROOT = Path(__file__).resolve().parents[1]
+# The scan app and the hold generator are packaged the same way from their own PyInstaller builds.
+APPS = {
+    'rockform': dict(application='Rockform', exe='Rockform.exe', stem='Rockform', spec='Rockform.spec',
+                     start_here='WINDOWS-START-HERE.txt', purpose='Shape and mounting prototype'),
+    'holdgen': dict(application='Rockform hold generator', exe='RockformHoldgen.exe', stem='RockformHoldgen',
+                    spec='RockformHoldgen.spec', start_here='packaging/HOLDGEN-START-HERE.txt',
+                    purpose='Procedural hold and route prototype'),
+}
 
 
 def git(*args):
     return subprocess.check_output(['git', *args], cwd=ROOT, text=True).strip()
 
 
-def package(bundle: Path, output: Path):
-    version = tomllib.loads((ROOT / 'pyproject.toml').read_text(encoding='utf-8'))['project']['version']
+def app_version(app):
+    if app == 'holdgen':
+        text = (ROOT / 'rockform' / 'holdgen' / '__init__.py').read_text(encoding='utf-8')
+        return re.search(r'__version__ = "([^"]+)"', text).group(1)
+    return tomllib.loads((ROOT / 'pyproject.toml').read_text(encoding='utf-8'))['project']['version']
+
+
+def package(bundle: Path, output: Path, app='rockform'):
+    spec = APPS[app]
+    version = app_version(app)
     bundle = bundle.resolve()
-    if not (bundle / 'Rockform.exe').is_file() or not (bundle / '_internal').is_dir():
-        raise ValueError('Build Rockform.spec with PyInstaller first; the complete app folder is required.')
+    if not (bundle / spec['exe']).is_file() or not (bundle / '_internal').is_dir():
+        raise ValueError(f"Build {spec['spec']} with PyInstaller first; the complete app folder is required.")
     if git('status', '--porcelain', '--untracked-files=no'):
         raise ValueError('Commit tracked source changes before packaging a versioned release.')
     source_commit = git('rev-parse', 'HEAD')
     output.mkdir(parents=True, exist_ok=True)
-    stem = f'Rockform-{version}-Windows-x64'
+    stem = f"{spec['stem']}-{version}-Windows-x64"
     destination = output / f'{stem}.zip'
     if destination.exists():
         raise FileExistsError(f'Refusing to replace an existing release archive: {destination}')
@@ -95,19 +112,19 @@ def package(bundle: Path, output: Path):
         if source.is_file():
             relative = source.relative_to(ROOT / 'packaging' / 'licenses')
             license_files[f'licenses/{relative.as_posix()}'] = source
-    with (bundle / 'Rockform.exe').open('rb') as stream:
+    with (bundle / spec['exe']).open('rb') as stream:
         executable_digest = hashlib.file_digest(stream, 'sha256').hexdigest()
-    info = dict(application='Rockform', version=version, source_commit=source_commit,
+    info = dict(application=spec['application'], version=version, source_commit=source_commit,
         repository='https://github.com/Xero-05/rockform', platform='Windows x64',
         built_with_python=platform.python_version(), packaged_utc=datetime.now(timezone.utc).isoformat(),
         built_with_pyinstaller=metadata.version('PyInstaller'),
         executable_sha256=executable_digest,
-        dependencies=dependencies, code_signed=False, purpose='Shape and mounting prototype')
+        dependencies=dependencies, code_signed=False, purpose=spec['purpose'])
     manifest = json.dumps(info, indent=2) + '\n'
     with zipfile.ZipFile(destination, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
         for path in files:
             archive.write(path, f'{stem}/{path.relative_to(bundle).as_posix()}')
-        archive.write(ROOT / 'WINDOWS-START-HERE.txt', f'{stem}/START-HERE.txt')
+        archive.write(ROOT / spec['start_here'], f'{stem}/START-HERE.txt')
         archive.writestr(f'{stem}/build-info.json', manifest)
         archive.writestr(f'{stem}/THIRD-PARTY-NOTICES.md', '\n'.join(notices) + '\n')
         for name, path in sorted(license_files.items()):
@@ -129,7 +146,8 @@ def package(bundle: Path, output: Path):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--bundle', type=Path, default=ROOT / 'dist' / 'Rockform')
+    parser.add_argument('--app', choices=APPS, default='rockform')
+    parser.add_argument('--bundle', type=Path, help='built app folder (default: dist/<Rockform or RockformHoldgen>)')
     parser.add_argument('--output', type=Path, default=ROOT / 'dist' / 'releases')
     args = parser.parse_args()
-    package(args.bundle, args.output)
+    package(args.bundle or ROOT / 'dist' / APPS[args.app]['stem'], args.output, args.app)

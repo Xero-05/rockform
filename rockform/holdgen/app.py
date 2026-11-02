@@ -1,5 +1,5 @@
 """Hold generator window: choose a type and difficulty, inspect grip as a heat map, see how difficulty
-changes with the angle of pull, and export STL."""
+changes with the angle of pull, and export STL. The Route tab sets whole routes of generated holds on a wall."""
 from __future__ import annotations
 
 import json
@@ -464,7 +464,12 @@ class GeneratorWindow(QtWidgets.QMainWindow):
         layout = QtWidgets.QHBoxLayout(central)
         layout.addWidget(scroll)
         layout.addWidget(right, 1)
-        self.setCentralWidget(central)
+        from .route_app import RouteView      # it imports this module's helpers
+        self.routes = RouteView(inspect=self.inspect_placed)
+        self.tabs = QtWidgets.QTabWidget()
+        self.tabs.addTab(central, "Hold")
+        self.tabs.addTab(self.routes, "Route")
+        self.setCentralWidget(self.tabs)
 
         for s in (self.difficulty, self.wall):
             s.valueChanged.connect(self.update_labels)
@@ -534,9 +539,12 @@ class GeneratorWindow(QtWidgets.QMainWindow):
             return
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
+        self.present(request)
+
+    def present(self, request, pull_dir=None, note=""):
         h = self.hold
         self.set_controls(request, h.target)
-        self.message.setText("".join(f"⚠ {n}\n" for n in h.notes).strip())
+        self.message.setText((note + "\n" if note else "") + "".join(f"⚠ {n}\n" for n in h.notes).strip())
         self.reach.setText(f"A {request.hold_type} with this variation reaches {h.achievable[0]:.1f}–{h.achievable[1]:.1f} "
                            f"on a {wall_text(request.wall_angle).lower()} wall.")
         size = " × ".join(f"{v:.0f}" for v in h.mesh.extents)
@@ -547,9 +555,21 @@ class GeneratorWindow(QtWidgets.QMainWindow):
                              f"({inches} in) · "
                              f"{h.mesh.volume / 1000:.0f} cm³<br>Holding area {h.holding_area_mm2:.0f} mm² straight down{extra}")
         self.export_button.setEnabled(True)
-        same = self.shown_type == request.hold_type
+        same = self.shown_type == request.hold_type and pull_dir is None
         self.shown_type = request.hold_type
-        self.refresh_placement(keep_camera=same, pull_dir=self.pull_dir if same else (0., 0.))
+        self.refresh_placement(keep_camera=same, pull_dir=pull_dir or (self.pull_dir if same else (0., 0.)))
+
+    def inspect_placed(self, placed):
+        """Show a hold from the Route tab as it is placed: drilled, turned, and pulled the way the route uses it.
+        Changing the type, difficulty, size or variation generates a fresh, undrilled hold."""
+        self.hold = placed.hold
+        self.rotation.blockSignals(True)
+        self.rotation.setValue(round(placed.spin))
+        self.rotation.blockSignals(False)
+        self.tabs.setCurrentIndex(0)
+        self.present(placed.hold.request, pull_dir=(placed.pull_deg, 0.),
+                     note=f"{placed.role.capitalize()} hold from the Route tab, as placed: drilled for its bolt, "
+                          f"turned {rotation_text(placed.spin).lower()}.")
 
     def placement(self):
         return float(self.rotation.value())
@@ -690,6 +710,7 @@ class GeneratorWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event):
         self.plotter.close()
+        self.routes.close()
         super().closeEvent(event)
 
 
