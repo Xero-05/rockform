@@ -96,3 +96,16 @@ def test_library_calls_import_save_show_and_plan():
     assert len(W.library_list()) == 3
     assert W.library_merge(data) == 4 and len(W.library_list()) == 7
     W.LIBRARY.clear()
+
+
+def test_profile_editor_calls():
+    hold = W.generate_hold(dict(type="edge", difficulty=4, seed="2", wall_angle=0, size=1))
+    profile = W.hold_profile(hold["id"])
+    assert profile["type"] == "edge" and len(profile["points"]) >= 3
+    edited = W.custom_hold(dict(profile, seed="2", wall_angle=20, rotation=0))
+    assert edited["profile"]["width"] == profile["width"] and edited["wall_angle"] == 20.
+    assert W.hold_profile(edited["id"])["points"] == edited["profile"]["points"]
+    assert W.grip(edited["id"], 0., 0., 0., "grip")["difficulty"] == pytest.approx(edited["difficulty"], abs=.01)
+    assert len(W.shape_profile("sloper", "1")["points"]) <= 12
+    with pytest.raises(ValueError):
+        W.hold_profile(W.library_show(W.library_save(hold["id"])["id"], 0.)["id"])

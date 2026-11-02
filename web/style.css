@@ -69,6 +69,12 @@ main { height: calc(100% - 58px); }
 fieldset { border: 1px solid #30464c; border-radius: 7px; margin: 14px 0 0; padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 6px; }
 legend { color: #acd6c9; padding: 0 4px; }
 #add-route { width: 100%; margin-top: 8px; }
+.small { font-size: 12px; }
+details > summary { cursor: pointer; list-style-position: outside; margin-left: 14px; }
+details > summary h2 { display: inline-block; }
+.profile-canvas { display: block; width: 100%; height: 260px; border-radius: 6px; background: linear-gradient(#1d3238, #15242b);
+  border: 1px solid var(--line); touch-action: none; cursor: crosshair; }
+.profile-canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .cards { display: flex; flex-wrap: wrap; gap: 10px; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; flex: 1 1 260px; min-width: 0; max-height: 330px;

@@ -328,8 +328,12 @@ class HoldLibrary:
         name = name or f"{r.hold_type.capitalize()} {hold.difficulty:.1f} (variation {r.seed})"
         bore = float(getattr(hold, "hole_mm", 0.))
         hole = [round(float(v), 2) for v in hold.hole] if bore and hasattr(hold, "hole") else None
-        settings = f"generated {r.hold_type}, variation {r.seed}, size × {r.size:.2f}, target {hold.target:.1f} " \
-                   f"on a {r.wall_angle:g}° wall"
+        if "profile" in hold.params:
+            settings = f"custom profile gripped like a {r.hold_type}, variation {r.seed}, " \
+                       f"measured {hold.difficulty:.1f} on a {r.wall_angle:g}° wall"
+        else:
+            settings = f"generated {r.hold_type}, variation {r.seed}, size × {r.size:.2f}, target {hold.target:.1f} " \
+                       f"on a {r.wall_angle:g}° wall"
         return self._add(hold.mesh.copy(), name, r.hold_type, "generated", settings, hole, bore if hole else 0.)
 
     # ---- editing ---------------------------------------------------------------------------

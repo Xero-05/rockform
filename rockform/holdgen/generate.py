@@ -157,6 +157,16 @@ def pull_range(mesh, request, around=PULL_AROUND, outward=PULL_OUTWARD, cone_deg
                 rotation_deg=float(rotation_deg))
 
 
+def from_profile(request: HoldRequest, points, width, outline=2.5, texture=.9):
+    """Rate a hold lofted from an edited side profile (see shapes.build_profile), gripped like
+    `request.hold_type`. Nothing is searched: its difficulty is whatever the shape measures."""
+    mesh, params = shapes.build_profile(points, width, outline, texture, request.seed)
+    params["type"] = request.hold_type
+    area, difficulty, mask = measure(mesh, request)
+    return GeneratedHold(mesh, params, request, difficulty, area, difficulty, mask, (difficulty, difficulty), [],
+                         pull_range(mesh, request))
+
+
 def generate(request: HoldRequest, tolerance=0.1, context=None):
     """Search the shape's hardness until the measured difficulty reaches the target."""
     ctx = context or TaskContext()

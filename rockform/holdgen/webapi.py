@@ -17,7 +17,8 @@ import tempfile
 import zipfile
 import numpy as np
 from . import shapes
-from .generate import HoldRequest, generate, parse_description, measure, best_mode, pull_range, GRAB_STYLES, GRAB_NAMES
+from .generate import (HoldRequest, generate, from_profile, parse_description, measure, best_mode, pull_range,
+                       GRAB_STYLES, GRAB_NAMES)
 from . import route as R
 from .library import AXES, UNITS, USES, HoldLibrary, default_folder
 
@@ -56,7 +57,8 @@ def _hold(hold, hold_id, rotation=0., pull_dir=(0., 0.)):
                 volume_cm3=hold.mesh.volume / 1000., fingers=hold.params.get("fingers"),
                 pocket_depth=hold.params.get("pocket_depth"), rotation=rotation, pull=pull,
                 pull_dir=list(pull_dir), mesh=_mesh(hold.mesh), drilled=bool(getattr(hold, "hole_mm", 0.)),
-                library=hold.params.get("library", ""), name=hold.params.get("name", ""))
+                library=hold.params.get("library", ""), name=hold.params.get("name", ""),
+                profile=hold.params.get("profile"))
 
 
 def generate_hold(spec):
@@ -67,6 +69,33 @@ def generate_hold(spec):
         request = HoldRequest(spec["type"], float(spec["difficulty"]), None, spec.get("seed") or 0,
                               float(spec.get("wall_angle", 0.)), size=float(spec.get("size", 1.)))
     hold = generate(request)
+    hold_id = _id("h")
+    HOLDS[hold_id] = hold
+    return _hold(hold, hold_id, float(spec.get("rotation", 0.)))
+
+
+def hold_profile(hold_id):
+    """The side profile the editor starts from: a custom hold's own, or a generated hold's middle section."""
+    hold = HOLDS[hold_id]
+    p = hold.params
+    if "profile" in p:
+        return dict(p["profile"], type=hold.request.hold_type)
+    if "hardness" not in p:
+        raise ValueError("This hold was not generated, so it has no profile to edit. Start from a shape instead.")
+    return shapes.section(p["type"], p["hardness"], p["seed"], p["size"], p.get("fingers"))
+
+
+def shape_profile(hold_type, seed=0):
+    """A medium hold of this type's middle section, to start the profile editor from."""
+    return shapes.section(hold_type, .5, seed or 0)
+
+
+def custom_hold(spec):
+    """spec: points ([y, z, corner radius] from the bottom wall corner to the top one), width, outline,
+    texture, type (how it is gripped), seed, wall_angle, rotation. Lofts and rates the edited profile."""
+    request = HoldRequest(spec["type"], None, None, spec.get("seed") or 0, float(spec.get("wall_angle", 0.)))
+    hold = from_profile(request, [[float(v) for v in p] for p in spec["points"]], float(spec["width"]),
+                        float(spec.get("outline", 2.5)), float(spec.get("texture", .9)))
     hold_id = _id("h")
     HOLDS[hold_id] = hold
     return _hold(hold, hold_id, float(spec.get("rotation", 0.)))

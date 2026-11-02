@@ -85,6 +85,27 @@ down-pull and still usable from the side.
 - **Pocket fingers:** *mono*, *2-finger*, *three finger*. Without it, the count follows difficulty.
 - **Seed:** *seed 12*. The same description and seed always reproduce the same hold.
 
+## Fine-tuning the profile (browser)
+
+Every hold is one side section lofted across the wall. **5 Fine-tune the profile** in the
+[browser app](#in-the-browser)'s Hold view edits that section directly:
+
+1. **Start from this hold** copies the middle section of the hold on screen (through a pocket's hole), or
+   **Start from shape** takes a medium hold of any type.
+2. Drag the points; the wall is on the left. The square end points stay on the wall and only slide up and down.
+   Double-click a line to add a point; select one and press Delete to remove it. Arrow keys nudge the selected
+   point by 1 mm (Shift: 5 mm), and Ctrl+Z or **Undo** steps back.
+3. **Corner rounding** sets the selected point's radius. **Width**, **Height**, **Depth**, **Outline**
+   (how boxy the hold is across the wall) and **Surface texture** scale the rest.
+4. **Grip behaves like** chooses which hold type's grip is used to rate it (a pinch is rated as a squeeze).
+
+The hold is re-built and rated after each change, so its difficulty is measured from the shape rather than
+searched for. Wall angle, rotation and variation re-rate the edited hold; picking a type, size, difficulty or
+description generates a new one. An outline that crosses itself is refused with a message. An edited hold
+exports and saves to the library (and from there into routes) like any other, and its report's `shape.profile` holds the
+points, width, outline and texture that rebuild it (`rockform.holdgen.shapes.build_profile`). A pocket's
+hole is a single section, so an edited pocket becomes a slot across the whole width.
+
 ## Difficulty: holding area
 
 The metric ports the `HoldingArea` geometry-nodes group from `normals_V3.blend`. Frame: X across the wall,
