@@ -18,6 +18,7 @@
     <nav role="tablist">
       <button role="tab" id="tab-hold" aria-selected="true" data-view="hold">Hold</button>
       <button role="tab" id="tab-route" aria-selected="false" data-view="route">Route</button>
+      <button role="tab" id="tab-library" aria-selected="false" data-view="library">Library</button>
     </nav>
     <div id="status" class="status">Starting…</div>
   </header>
@@ -88,7 +89,7 @@
             <span class="eyebrow">HOLD</span>
             <p id="details"></p>
             <p id="holding-line" class="muted"></p>
-            <button id="export-hold" class="primary" disabled>Export STL + report</button>
+            <div class="row"><button id="save-hold" disabled title="Keep this hold in the Library, so routes can use it">Save to library</button><button id="export-hold" class="primary" disabled>Export STL + report</button></div>
           </div>
         </div>
       </div>
@@ -97,8 +98,8 @@
     <!-- Route view ----------------------------------------------------------------------------->
     <section id="view-route" class="view" hidden>
       <aside class="side">
-        <p class="muted">Plans a boulder route from generated holds: each is drilled, turned so its best grip faces the
-          climber's pull, and rated as placed. Drag holds on the wall to move them.</p>
+        <p class="muted">Plans a boulder route from generated and library holds: each is drilled, turned so its best grip
+          faces the climber's pull, and rated as placed. Drag holds on the wall to move them.</p>
         <h2>1 Wall</h2>
         <div class="grid2">
           <label for="wall-width">Width (mm)</label><input id="wall-width" type="number" min="1000" max="20000" step="100" value="2000">
@@ -118,6 +119,13 @@
           <label for="bolt">Bolt hole (mm)</label><input id="bolt" type="number" min="0" max="20" step="0.5" value="10.5" title="0 = no holes">
         </div>
         <label class="check"><input id="feet" type="checkbox" checked> Foot holds</label>
+        <div class="grid2">
+          <label for="use-library">Library</label>
+          <select id="use-library" title="Use library holds that fit: a hand hold comes from the Library when one lands within 1 of the difficulty asked for, else it is generated.&#10;Only library holds: every hold, feet too, is the nearest library hold.&#10;Each library hold is used once per route.">
+            <option value="prefer">Use library holds that fit</option><option value="only">Only library holds</option><option value="off">Generate every hold</option>
+          </select>
+        </div>
+        <p id="library-count" class="muted"></p>
         <button id="add-route" class="primary">Add route to wall</button>
         <div class="row"><button id="remove-route">Remove last route</button><button id="clear-wall">Clear wall</button></div>
         <div id="route-busy" class="busy" hidden><i></i></div>
@@ -164,6 +172,43 @@
               layout.json for Blender's Rock Wall Builder add-on.</p>
             <button id="export-wall" class="primary" disabled>Export wall</button>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Library view --------------------------------------------------------------------------->
+    <section id="view-library" class="view" hidden>
+      <aside class="side">
+        <p class="muted">Holds you already have, as 3D models, and holds saved from the Hold view. The Route view can set
+          routes from them instead of generating every hold.</p>
+        <h2>1 Import 3D models</h2>
+        <div class="grid2">
+          <label for="lib-type" title="How it is rated: a pinch is squeezed; every other type is hung from">Rate as</label><select id="lib-type"></select>
+          <label for="lib-units">Units</label>
+          <select id="lib-units"><option value="">From the file (OBJ), else mm</option><option value="mm">Millimetres</option><option value="cm">Centimetres</option><option value="m">Metres</option><option value="in">Inches</option></select>
+          <label for="lib-axis" title="The model's direction out of the wall">Out of the wall</label>
+          <select id="lib-axis"><option value="auto">Find the flat back</option><option value="+Z">+Z (Z-up, back on the print bed)</option><option value="-Z">-Z</option><option value="+Y">+Y (Y-up, lying on its back)</option><option value="-Y">-Y</option><option value="+X">+X</option><option value="-X">-X</option></select>
+          <label for="lib-turn" title="Turn it on the wall, anticlockwise as the climber sees it, if it comes in upside down or sideways">Turn</label>
+          <select id="lib-turn"><option value="0">As modelled</option><option value="90">+90°</option><option value="180">+180°</option><option value="-90">-90°</option></select>
+        </div>
+        <label class="check" title="A hole through the model is found and used as is. Without one, or with this off, the hold is drilled for the route's bolt each time it is placed."><input id="lib-keep-hole" type="checkbox" checked> Keep a bolt hole it already has</label>
+        <label class="primary file-button">Import model files…<input id="lib-files" type="file" multiple accept=".stl,.obj,.ply,.off,.glb,.gltf" hidden></label>
+        <p class="muted">STL, OBJ, PLY, OFF, GLB or glTF. STL has no units: choose them. The model is centred on its
+          footprint with its back on the wall.</p>
+        <h2>2 Share</h2>
+        <div class="row"><button id="lib-export">Export library</button><label class="file-button">Add from ZIP…<input id="lib-zip" type="file" accept=".zip" hidden></label></div>
+        <p id="lib-stored" class="muted"></p>
+        <p id="lib-message" class="muted message"></p>
+      </aside>
+
+      <div class="stage">
+        <div class="card fill">
+          <span class="eyebrow">HOLDS (double-click a name to rename it)</span>
+          <div class="table-wrap"><table id="lib-table"><thead><tr>
+            <th>Name</th><th>Rate as</th><th>Size (mm)</th><th>Bolt hole</th><th>Vertical</th><th>Source</th><th>Added</th>
+          </tr></thead><tbody></tbody></table></div>
+          <p id="lib-details" class="muted"></p>
+          <div class="row"><button id="lib-show" disabled title="Rate it in the Hold view, on the wall angle set there">Show in hold view</button><button id="lib-remove" disabled>Remove</button></div>
         </div>
       </div>
     </section>

@@ -69,6 +69,8 @@ function pullText(a) {
 }
 const rotationText = (r) => Math.abs(r) < .5 ? "as designed" : Math.abs(Math.abs(r) - 180) < .5 ? "upside down" : `${Math.abs(r)}° ${r > 0 ? "anticlockwise" : "clockwise"}`;
 const wrap = (a) => ((a + 180) % 360 + 360) % 360 - 180;
+const escape = (text) => String(text).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+const capital = (text) => text[0].toUpperCase() + text.slice(1);
 
 // ---- a 3D view ------------------------------------------------------------------------------------------
 class View {
@@ -155,6 +157,7 @@ function setupHoldControls(info) {
   $("overlay").onchange = () => { $("grip-legend").hidden = $("overlay").value === "plain"; showPull(...H.pull); };
   $("hold-reset").onclick = () => frameHold();
   $("export-hold").onclick = async () => { const [name, bytes] = await busy("Exporting…", () => rpc("export_hold", [H.hold.id])); download(name, bytes); };
+  $("save-hold").onclick = saveToLibrary;
   const grabs = $("grabs");
   Object.entries(info.styles).forEach(([key, s]) => {
     const b = document.createElement("button");
@@ -223,9 +226,11 @@ function showHold(hold, pull = null, sameShape = false, note = "") {
   $("reach").textContent = `A ${hold.type} with this variation reaches ${hold.achievable[0].toFixed(1)}–${hold.achievable[1].toFixed(1)} on a ${wallText(hold.wall_angle).toLowerCase()} wall.`;
   $("hold-message").textContent = [note, ...hold.notes.map((n) => `⚠ ${n}`)].filter(Boolean).join("\n");
   const pocket = hold.fingers ? `<br>${hold.fingers}-finger pocket, ${hold.pocket_depth.toFixed(0)} mm deep` : "";
-  $("details").innerHTML = `<b>${hold.type[0].toUpperCase() + hold.type.slice(1)}</b>, variation ${hold.seed}${hold.drilled ? " · drilled" : ""}<br>` +
+  const what = hold.library ? `<b>${escape(hold.name)}</b> · library hold, rated as a ${hold.type}` : `<b>${capital(hold.type)}</b>, variation ${escape(hold.seed)}`;
+  $("details").innerHTML = `${what}${hold.drilled ? " · drilled" : ""}<br>` +
     `${mm} mm (${inch} in) · ${hold.volume_cm3.toFixed(0)} cm³<br>Holding area ${hold.holding_area.toFixed(0)} mm² straight down${pocket}`;
   $("export-hold").disabled = false;
+  $("save-hold").disabled = !!hold.library;
   const { lo, hi } = { lo: hold.pull.min, hi: hold.pull.max };
   const turned = hold.rotation ? ` with the hold turned ${rotationText(hold.rotation)}` : "";
   $("range-text").innerHTML = `<b>${lo.toFixed(1)} – ${hi.toFixed(1)}</b> for pulls within ${hold.pull.cone_deg.toFixed(0)}° of straight down${turned} (dashed line in the chart).`;
@@ -515,7 +520,7 @@ function mergeRoute(update) {
 
 async function addRoute() {
   const spec = { wall: wallSpec(), grade: R.grade, seed: $("route-seed").value || "0", moves: +$("moves").value,
-                 feet: $("feet").checked, bolt: +$("bolt").value };
+                 feet: $("feet").checked, bolt: +$("bolt").value, library: $("use-library").disabled ? "off" : $("use-library").value };
   $("route-busy").hidden = false;
   setRouteButtons(false);
   $("route-message").textContent = `Planning a ${spec.grade} route…`;
@@ -526,7 +531,8 @@ async function addRoute() {
     R.routes.set(route.id, route);
     setProblems(out.problems);
     const notes = route.summary.notes || [];
-    $("route-message").textContent = `Added ${route.name}: estimated ${route.summary.estimated_grade}, ${route.holds.length} holds.` + (notes.length ? `\n${notes.length} note(s): see the route card.` : "");
+    const fromLibrary = route.summary.library_holds ? ` (${route.summary.library_holds} from the library)` : "";
+    $("route-message").textContent = `Added ${route.name}: estimated ${route.summary.estimated_grade}, ${route.holds.length} holds${fromLibrary}.` + (notes.length ? `\n${notes.length} note(s): see the route card.` : "");
     route.holds.forEach((h, i) => addHoldObject(route.id, route, h, i));
     routesChanged(route.id);
   } catch (error) {
@@ -568,7 +574,7 @@ function fillTable() {
       const h = route.holds[index], k = key(rid, index), tr = body.insertRow();
       tr.dataset.key = k;
       const problem = R.problems.get(k);
-      const cells = [route.name, h.role[0] + h.role.slice(1).toLowerCase(), h.type[0].toUpperCase() + h.type.slice(1), h.difficulty.toFixed(1),
+      const cells = [route.name, h.role[0] + h.role.slice(1).toLowerCase(), capital(h.type) + (h.library ? ` · ${h.name}` : ""), h.difficulty.toFixed(1),
         h.role === "FOOT" ? "Foot" : STYLE_NAMES[h.style], `${h.spin >= 0 ? "+" : ""}${h.spin.toFixed(0)}°`,
         `${h.u.toFixed(0)}, ${h.v.toFixed(0)}${h.moved ? " ✎" : ""}${problem ? " ⚠" : ""}`, h.size.map((v) => v.toFixed(0)).join(" × ")];
       cells.forEach((text, c) => { const td = tr.insertCell(); td.textContent = text; });
@@ -608,7 +614,8 @@ function describeSelected() {
   if (!R.selected) { $("selected-line").textContent = "Select a hold to move or turn it."; return; }
   const h = findHold(R.selected.rid, R.selected.index), problem = R.problems.get(key(R.selected.rid, R.selected.index));
   const pull = h.role === "FOOT" ? "" : `, expected pull: ${pullText(h.pull_deg).toLowerCase()}`;
-  $("selected-line").innerHTML = `<b>${h.type[0].toUpperCase() + h.type.slice(1)}</b> ${difficultyWord(h.difficulty).toLowerCase()} (${h.difficulty.toFixed(1)})${pull}, ` +
+  const source = h.library ? ` from the library (“${escape(h.name)}”)` : "";
+  $("selected-line").innerHTML = `<b>${capital(h.type)}</b>${source} ${difficultyWord(h.difficulty).toLowerCase()} (${h.difficulty.toFixed(1)})${pull}, ` +
     `turned ${h.spin >= 0 ? "+" : ""}${h.spin.toFixed(0)}°, Ø${h.hole_mm.toFixed(1)} mm hole${h.moved ? " · moved by hand" : ""}.` + (problem ? ` <span class="warn">⚠ It ${problem}.</span>` : "");
   $("pos-u").value = h.u; $("pos-v").value = h.v;
   $("pos-u").step = $("pos-v").step = R.wall.bolt_spacing;
@@ -754,16 +761,151 @@ canvas.addEventListener("pointercancel", endDrag);
 
 // =========================================================================================================
 function showView(name) {
-  for (const v of ["hold", "route"]) {
+  for (const v of ["hold", "route", "library"]) {
     $(`view-${v}`).hidden = v !== name;
     $(`tab-${v}`).setAttribute("aria-selected", String(v === name));
   }
+  if (name === "library") return;
   (name === "hold" ? H : R).view.resize();
   if (name === "hold" && H.hold) { drawPullChart(); drawRangeBar(+$("big").textContent, H.hold.pull.min, H.hold.pull.max); }
 }
 document.querySelectorAll("nav button").forEach((b) => b.onclick = () => showView(b.dataset.view));
 
-window.rockform = { H, R };          // for debugging from the console
+// =========================================================================================================
+// Library view: imported 3D models and saved holds, kept in this browser (IndexedDB) by the worker
+// =========================================================================================================
+const L = { holds: [], selected: new Set() };
+
+function setupLibraryControls(info) {
+  info.types.forEach((type) => $("lib-type").add(new Option(capital(type), type)));
+  $("lib-type").value = "jug";
+  $("lib-files").onchange = async (e) => {
+    const files = [...e.target.files];
+    e.target.value = "";
+    if (!files.length) return;
+    const options = { type: $("lib-type").value, units: $("lib-units").value, axis: $("lib-axis").value,
+                      turn: +$("lib-turn").value, keep_hole: $("lib-keep-hole").checked };
+    const added = [], problems = [];
+    for (const file of files) {
+      $("lib-message").textContent = `Importing ${file.name}…`;
+      try {
+        const data = new Uint8Array(await file.arrayBuffer());
+        const entry = await busy(`Importing ${file.name}…`, () => rpc("library_import", [file.name, data, options]));
+        added.push(entry);
+        problems.push(...entry.notes.map((n) => `${entry.name}: ${n}`));
+      } catch (error) { problems.push(`${file.name}: ${error.message}`); }
+    }
+    $("lib-message").textContent = [added.length ? `Added ${added.length} hold(s).` : "", ...problems.map((n) => `⚠ ${n}`)].filter(Boolean).join("\n");
+    await refreshLibrary(null, added.map((h) => h.id));
+  };
+  $("lib-export").onclick = async () => {
+    if (!L.holds.length) { $("lib-message").textContent = "The library is empty."; return; }
+    const [name, bytes] = await busy("Packing the library…", () => rpc("library_export"));
+    download(name, bytes);
+  };
+  $("lib-zip").onchange = async (e) => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    try {
+      const count = await busy("Adding holds…", async () => rpc("library_merge", [new Uint8Array(await file.arrayBuffer())]));
+      $("lib-message").textContent = `Added ${count} hold(s) from ${file.name}.`;
+    } catch (error) { $("lib-message").textContent = `Could not add that library: ${error.message}`; }
+    await refreshLibrary();
+  };
+  $("lib-show").onclick = showLibraryHold;
+  $("lib-remove").onclick = async () => {
+    const ids = [...L.selected];
+    const names = L.holds.filter((h) => L.selected.has(h.id)).map((h) => h.name).join(", ");
+    if (!ids.length || !confirm(`Remove ${names} from the library? Routes already on the wall keep them.`)) return;
+    let list = L.holds;
+    for (const id of ids) list = await rpc("library_remove", [id]);
+    $("lib-message").textContent = `Removed ${ids.length} hold(s).`;
+    await refreshLibrary(list);
+  };
+}
+async function refreshLibrary(list = null, select = []) {
+  L.holds = list || await rpc("library_list");
+  L.selected = new Set(select.filter((id) => L.holds.some((h) => h.id === id)));
+  const body = $("lib-table").tBodies[0];
+  body.innerHTML = "";
+  for (const h of L.holds) {
+    const tr = body.insertRow();
+    tr.dataset.id = h.id;
+    const hole = h.hole ? `Ø${h.hole_mm} mm, kept` : h.watertight ? "Drilled per route" : "⚠ Not closed: can't drill";
+    const cells = [h.name, "", h.size_mm.map((v) => v.toFixed(0)).join(" × "), hole, h.difficulty.toFixed(1), capital(h.source), h.added];
+    cells.forEach((text) => { tr.insertCell().textContent = text; });
+    tr.cells[0].title = `${h.original}\nDouble-click to rename`;
+    tr.cells[3].classList.toggle("warn", !h.hole && !h.watertight);
+    tr.cells[4].style.color = difficultyColor(h.difficulty);
+    tr.cells[4].title = `Easiest pull on a vertical wall, turned to face it. Within 30° of down: ${h.difficulty_range[0].toFixed(1)}–${h.difficulty_range[1].toFixed(1)}`;
+    const kind = document.createElement("select");
+    R.info.types.forEach((type) => kind.add(new Option(capital(type), type)));
+    kind.value = h.type;
+    kind.onclick = (e) => e.stopPropagation();
+    kind.onchange = async () => { await refreshLibrary(await busy("Re-rating…", () => rpc("library_retype", [h.id, kind.value])), [h.id]); };
+    tr.cells[1].appendChild(kind);
+    tr.onclick = (e) => {
+      if (!(e.ctrlKey || e.metaKey || e.shiftKey)) L.selected.clear();
+      L.selected.has(h.id) && (e.ctrlKey || e.metaKey) ? L.selected.delete(h.id) : L.selected.add(h.id);
+      markLibrary();
+    };
+    tr.cells[0].ondblclick = () => renameLibraryHold(tr.cells[0], h);
+    tr.ondblclick = (e) => { if (e.target !== tr.cells[0]) showLibraryHold(); };
+  }
+  $("lib-stored").textContent = "Kept in this browser between visits. Export the library to back it up or move it to another computer.";
+  const count = L.holds.length;
+  $("use-library").disabled = !count;
+  $("library-count").textContent = count ? `${count} hold(s) in the library.` : "The library is empty: import models or save holds in the Library view.";
+  markLibrary();
+}
+function renameLibraryHold(cell, h) {
+  const input = Object.assign(document.createElement("input"), { type: "text", value: h.name });
+  cell.textContent = "";
+  cell.appendChild(input);
+  input.focus(); input.select();
+  let done = false;
+  const finish = async (save) => {
+    if (done) return;
+    done = true;
+    const name = input.value.trim();
+    await refreshLibrary(save && name && name !== h.name ? await rpc("library_rename", [h.id, name]) : L.holds, [h.id]);
+  };
+  input.onkeydown = (e) => { if (e.key === "Enter") finish(true); if (e.key === "Escape") finish(false); };
+  input.onblur = () => finish(true);
+  input.onclick = (e) => e.stopPropagation();
+}
+function markLibrary() {
+  for (const tr of $("lib-table").tBodies[0].rows) tr.classList.toggle("selected", L.selected.has(tr.dataset.id));
+  $("lib-show").disabled = L.selected.size !== 1;
+  $("lib-remove").disabled = !L.selected.size;
+  const h = L.selected.size === 1 && L.holds.find((x) => L.selected.has(x.id));
+  $("lib-details").innerHTML = !L.holds.length ? "No holds yet. Import 3D models, or use Save to library in the Hold view."
+    : !h ? `${L.holds.length} hold(s). Select one to see its details.`
+    : `<b>${escape(h.name)}</b> · ${h.type} · ${h.triangles.toLocaleString()} triangles · ${h.volume_cm3.toFixed(0)} cm³<br>From ${escape(h.original)}` +
+      h.notes.map((n) => `<br>⚠ ${escape(n)}`).join("");
+}
+async function showLibraryHold() {
+  if (L.selected.size !== 1) return;
+  const h = L.holds.find((x) => L.selected.has(x.id));
+  try {
+    const hold = await busy("Rating the hold…", () => rpc("library_show", [h.id, +$("wall").value]));
+    showView("hold");
+    showHold(hold, [0, 0], false, `Library hold “${h.name}”, rated as a ${h.type}. Changing the type, difficulty, size or variation generates a new hold.`);
+  } catch (error) { $("lib-message").textContent = `Could not open ${h.name}: ${error.message}`; }
+}
+async function saveToLibrary() {
+  if (!H.hold) return;
+  const suggested = `${capital(H.hold.type)} ${H.hold.difficulty.toFixed(1)} (variation ${H.hold.seed})`;
+  const name = prompt("Save to library as:", suggested);
+  if (name === null) return;
+  const entry = await busy("Saving to the library…", () => rpc("library_save", [H.hold.id, name.trim() || suggested]));
+  $("save-hold").disabled = true;
+  $("hold-message").textContent = `Saved “${entry.name}” to the library.`;
+  await refreshLibrary(null, [entry.id]);
+}
+
+window.rockform = { H, R, L };       // for debugging from the console
 
 async function started() {
   const info = await rpc("info");
@@ -771,6 +913,8 @@ async function started() {
   for (const type of info.types) info.icons[type] = await rpc("hold_icon", [type]);
   setupHoldControls(info);
   setupRouteControls(info);
+  setupLibraryControls(info);
+  await refreshLibrary();
   $("loading").hidden = true;
   $("status").textContent = "Runs in your browser · nothing is uploaded";
   showView("hold");

@@ -8,7 +8,8 @@ Everything runs locally on Windows; no Mac or cloud account is required.
   the iPhone LiDAR sensor itself.
 - **Hold generator and route setter:** generates holds of six types to a measured difficulty and sets graded
   boulder routes of them on a wall. Each hold is drilled for its bolt, turned to face the climber's pull and
-  rated as placed. Drag holds bolt to bolt in 3D and the route is re-rated. See [HOLDGEN.md](HOLDGEN.md).
+  rated as placed. Drag holds bolt to bolt in 3D and the route is re-rated. A hold library keeps imported 3D
+  models (STL, OBJ, PLY, GLB) and saved holds, and routes can be set from them. See [HOLDGEN.md](HOLDGEN.md).
 - **Blender Rock Wall Builder add-on** ([blender/rock_wall_builder.py](blender/rock_wall_builder.py)):
   parametric holds and walls, route tags, a setter's sheet and manufacturing checks. It loads walls exported
   by the route setter.
@@ -41,7 +42,7 @@ three.js 3D view. To run it locally, use `.venv\Scripts\python.exe web\build.py 
 ## Hold generator and route setter
 
 ```powershell
-.venv\Scripts\python.exe -m rockform.holdgen.app                                   # Hold and Route tabs
+.venv\Scripts\python.exe -m rockform.holdgen.app                                   # Hold, Route and Library tabs
 .venv\Scripts\python.exe -m rockform.holdgen "hard crimp on a 30 degree overhang"   # one hold: STL + report
 .venv\Scripts\python.exe -m rockform.holdgen.route --grade V3 --wall-angle 20       # one route: STLs + layout
 ```
@@ -50,6 +51,8 @@ three.js 3D view. To run it locally, use `.venv\Scripts\python.exe web\build.py 
   and a pull-angle chart show how the difficulty changes with the direction of pull.
 - **Route tab:** set a wall, add V0–V8 routes and move holds by dragging them in the 3D view (wheel or Q / E
   turns them). Export STLs, reports, a front-view SVG and a `layout.json` for the Blender add-on.
+- **Library tab:** import 3D models of holds you have, or save holds from the Hold tab. Routes use library
+  holds that fit the grade, or only library holds.
 
 Difficulty is a holding-area proxy and the route grade is a prototype heuristic. Neither is calibrated on
 climbers. [HOLDGEN.md](HOLDGEN.md) explains both and their limits.

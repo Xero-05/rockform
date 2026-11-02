@@ -68,3 +68,31 @@ def test_route_calls_plan_adjust_inspect_and_export():
     assert len(layout["routes"]) == 2 and all(s["file"] in archive.namelist() for s in layout["scans"].values())
     W.remove_route(second["id"])
     assert list(W.ROUTES) == [first["id"]]
+
+
+def test_library_calls_import_save_show_and_plan():
+    W.LIBRARY.clear()
+    jug = generate(HoldRequest("jug", level=.3, seed=5))
+    buffer = io.BytesIO()
+    drill.drill(jug.mesh, hardware("bolt"))[0].export(buffer, file_type="stl")
+    entry = W.library_import("My jug.stl", np.frombuffer(buffer.getvalue(), np.uint8),
+                             dict(type="jug", units="", axis="auto", turn=0, keep_hole=True))
+    assert entry["name"] == "My jug" and entry["hole"] and W.info()["library_uses"] == ["off", "prefer", "only"]
+    for kind, d in (("edge", 3.5), ("sloper", 3.), ("crimp", 6.)):
+        shown = W.generate_hold(dict(type=kind, difficulty=d, seed="2", wall_angle=0, size=1))
+        W.library_save(shown["id"], "")
+    assert [h["type"] for h in W.library_list()] == ["jug", "edge", "sloper", "crimp"]
+    opened = W.library_show(entry["id"], 20.)
+    assert opened["library"] == entry["id"] and opened["wall_angle"] == 20. and opened["drilled"]
+    W.library_rename(entry["id"], "Blue jug")
+    sloper = W.library_list()[2]["id"]
+    assert sloper.startswith("sloper-3-0") and W.library_retype(sloper, "pinch")[2]["type"] == "pinch"
+
+    route = W.plan(dict(wall=WALL, grade="V2", seed="3", library="only"), progress=lambda *_: None)["route"]
+    assert all(h["library"] for h in route["holds"]) and route["summary"]["library_holds"] == len(route["holds"])
+    assert any(h["name"] == "Blue jug" for h in route["holds"])
+    name, data = W.library_export()
+    W.library_remove(entry["id"])
+    assert len(W.library_list()) == 3
+    assert W.library_merge(data) == 4 and len(W.library_list()) == 7
+    W.LIBRARY.clear()

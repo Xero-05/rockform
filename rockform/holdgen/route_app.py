@@ -1,4 +1,4 @@
-"""Route tab of the hold generator window: set a wall, plan routes of generated holds on it, see them in 3D,
+"""Route tab of the hold generator window: set a wall, plan routes of generated and library holds on it, see them in 3D,
 move and turn holds by hand (re-rated as you go), inspect any hold in the hold view, and export STLs, reports
 and a Rock Wall Builder layout."""
 from __future__ import annotations
@@ -20,6 +20,7 @@ ROLE_NAMES = {"START": "Start", "HAND": "Hand", "FOOT": "Foot", "FINISH": "Finis
 STYLE_NAMES = {"down": "Down-pull", "side_right": "Side-pull →", "side_left": "Side-pull ←", "undercling": "Undercling"}
 COLOUR_MODES = ("Role", "Difficulty as placed", "Route")
 COLUMNS = ("Route", "Role", "Type", "Difficulty", "Grab", "Turn", "Across, up (mm)", "Size (mm)")
+LIBRARY_USES = (("prefer", "Use library holds that fit"), ("only", "Only library holds"), ("off", "Generate every hold"))
 
 
 def _hex(rgb):
@@ -46,9 +47,10 @@ class PlanWorker(QtCore.QThread):
 
 
 class RouteView(QtWidgets.QWidget):
-    def __init__(self, inspect=None):
+    def __init__(self, inspect=None, library=None):
         super().__init__()
         self.inspect_callback = inspect
+        self.library = library
         self.routes = []            # (name, colour, holds, summary), in the order they were set
         self.rows = []              # (route index, PlacedHold) per table row
         self.selected = None
@@ -61,8 +63,8 @@ class RouteView(QtWidgets.QWidget):
         form.setSpacing(8)
         form.addWidget(label("ROCKFORM", "eyebrow"))
         form.addWidget(label("Route setter", "brand"))
-        form.addWidget(label("Plans a boulder route from generated holds: each is drilled, turned so its best grip "
-                             "faces the climber's pull, and rated as placed."))
+        form.addWidget(label("Plans a boulder route from generated and library holds: each is drilled, turned so its "
+                             "best grip faces the climber's pull, and rated as placed."))
 
         form.addWidget(label("1  Wall", "section"))
         grid = QtWidgets.QGridLayout()
@@ -122,6 +124,19 @@ class RouteView(QtWidgets.QWidget):
         self.feet = QtWidgets.QCheckBox("Foot holds")
         self.feet.setChecked(True)
         form.addWidget(self.feet)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(label("Library"))
+        self.use_library = QtWidgets.QComboBox()
+        for key, text in LIBRARY_USES:
+            self.use_library.addItem(text, key)
+        self.use_library.setToolTip("Use library holds that fit: a hand hold comes from the Library tab when one "
+                                    "lands within 1 of the difficulty asked for, else it is generated.\n"
+                                    "Only library holds: every hold, feet too, is the nearest library hold.\n"
+                                    "Each library hold is used once per route.")
+        row.addWidget(self.use_library, 1)
+        form.addLayout(row)
+        self.library_line = label("")
+        form.addWidget(self.library_line)
 
         self.add_button = button("Add route to wall", self.add_route, primary=True)
         form.addWidget(self.add_button)
@@ -137,6 +152,7 @@ class RouteView(QtWidgets.QWidget):
         self.message = label("Holds already on the wall stay; new routes keep clear of them.")
         form.addWidget(self.message)
         form.addStretch()
+        self.library_changed()
         scroll = QtWidgets.QScrollArea()
         scroll.setWidget(side)
         scroll.setWidgetResizable(True)
@@ -277,6 +293,12 @@ class RouteView(QtWidgets.QWidget):
                                  "Clear the wall and add them again.")
         self.draw(keep_camera=bool(self.routes))
 
+    def library_changed(self):
+        count = len(self.library.holds) if self.library is not None else 0
+        self.use_library.setEnabled(count > 0)
+        self.library_line.setText(f"{count} hold(s) in the library." if count else
+                                  "The library is empty: import models or save holds in the Library tab.")
+
     def set_busy(self, busy):
         self.busy.setVisible(busy)
         for w in (self.add_button, self.undo_button, self.export_button):
@@ -293,8 +315,10 @@ class RouteView(QtWidgets.QWidget):
             self.message.setText("Clear the wall first: its routes were planned for another wall angle.")
             return
         self.pending = (grade, self.seed.text() or "0")
+        use = self.use_library.currentData() if self.use_library.isEnabled() else "off"
         self.worker = PlanWorker(grade=grade, wall=self.wall(), seed=self.pending[1], moves=self.moves.value() or None,
-                                 avoid=avoid, foot_holds=self.feet.isChecked(), bolt=self.hole.value())
+                                 avoid=avoid, foot_holds=self.feet.isChecked(), bolt=self.hole.value(),
+                                 library=self.library, use_library=use)
         self.worker.line.connect(lambda text: self.message.setText(text.strip()))
         self.worker.done.connect(self.route_ready)
         self.worker.failed.connect(lambda error: (self.set_busy(False),
@@ -312,7 +336,8 @@ class RouteView(QtWidgets.QWidget):
         self.routes.append((name, color, holds, summary))
         self.set_busy(False)
         notes = summary.get("notes", [])
-        self.message.setText(f"Added {name}: estimated {summary['estimated_grade']}, {len(holds)} holds."
+        from_library = f" ({summary['library_holds']} from the library)" if summary.get("library_holds") else ""
+        self.message.setText(f"Added {name}: estimated {summary['estimated_grade']}, {len(holds)} holds{from_library}."
                              + (f"\n{len(notes)} note(s): see the route card." if notes else ""))
         self.refresh(select_route=len(self.routes) - 1, keep_camera=len(self.routes) > 1)
 
@@ -347,7 +372,8 @@ class RouteView(QtWidgets.QWidget):
         self.table.setRowCount(len(self.rows))
         for r, (i, h) in enumerate(self.rows):
             name, color, *_ = self.routes[i]
-            cells = (name, ROLE_NAMES[h.role], h.hold_type.capitalize(), f"{h.difficulty:.1f}",
+            kind = h.hold_type.capitalize() + (f" · {h.name}" if h.library else "")
+            cells = (name, ROLE_NAMES[h.role], kind, f"{h.difficulty:.1f}",
                      STYLE_NAMES[h.style] if h.role != "FOOT" else "Foot", f"{h.spin:+.0f}°",
                      f"{h.u:.0f}, {h.v:.0f}" + (" ✎" if h.moved else "") + (" ⚠" if id(h) in self.problems else ""),
                      " × ".join(f"{v:.0f}" for v in h.size_mm))
@@ -420,7 +446,8 @@ class RouteView(QtWidgets.QWidget):
             return
         pull = "" if h.role == "FOOT" else f", expected pull: {pull_text(h.pull_deg).lower()}"
         warning = f" <span style='color:#f0812e'>⚠ It {self.problems[id(h)]}.</span>" if id(h) in self.problems else ""
-        self.hold_line.setText(f"<b>{h.hold_type.capitalize()}</b> {difficulty_word(h.difficulty).lower()} "
+        source = f" from the library (“{h.name}”)" if h.library else ""
+        self.hold_line.setText(f"<b>{h.hold_type.capitalize()}</b>{source} {difficulty_word(h.difficulty).lower()} "
                                f"({h.difficulty:.1f}){pull}, turned {h.spin:+.0f}°, Ø{h.hole_mm:.1f} mm hole"
                                f"{' · moved by hand' if h.moved else ''}.{warning}")
         for box, value in ((self.u_box, h.u), (self.v_box, h.v)):

@@ -2,23 +2,28 @@
 Pyodide. Results are dicts of plain values and NumPy arrays (meshes as float32 vertices and uint32 faces).
 Nothing here imports browser modules, so the desktop tests exercise the same code.
 
-State lives in this module: holds shown in the Hold view, and the routes on the wall.
+State lives in this module: holds shown in the Hold view, the routes on the wall, and the hold library. In the
+browser the library folder is /library, which the worker keeps in the browser's storage (IndexedDB).
 """
 from __future__ import annotations
 
+from dataclasses import asdict
 import io
 import json
 from pathlib import Path
 import shutil
+import sys
 import tempfile
 import zipfile
 import numpy as np
 from . import shapes
 from .generate import HoldRequest, generate, parse_description, measure, best_mode, pull_range, GRAB_STYLES, GRAB_NAMES
 from . import route as R
+from .library import AXES, UNITS, USES, HoldLibrary, default_folder
 
 HOLDS = {}          # hold id -> GeneratedHold shown in the Hold view
 ROUTES = {}         # route id -> dict(name, color, holds, summary, wall)
+LIBRARY = {}        # "library" -> the HoldLibrary, opened on first use
 _next = [0]
 
 
@@ -37,7 +42,8 @@ def info():
     return dict(types=list(shapes.HOLD_TYPES), info=dict(shapes.HOLD_INFO), sizes=dict(shapes.SIZES),
                 grades={g: dict(difficulty=d, move_mm=m) for g, (d, m, _f) in R.GRADES.items()},
                 styles={k: dict(angle=a, name=GRAB_NAMES[k]) for k, a in GRAB_STYLES.items()},
-                route_colors=[list(c) for c in R.ROUTE_COLORS], role_colors=dict(R.ROLE_COLORS))
+                route_colors=[list(c) for c in R.ROUTE_COLORS], role_colors=dict(R.ROLE_COLORS),
+                library_uses=list(USES), units=list(UNITS), axes=list(AXES))
 
 
 # ---- Hold view ----------------------------------------------------------------------------
@@ -49,7 +55,8 @@ def _hold(hold, hold_id, rotation=0., pull_dir=(0., 0.)):
                 holding_area=hold.holding_area_mm2, extents=hold.mesh.extents.tolist(),
                 volume_cm3=hold.mesh.volume / 1000., fingers=hold.params.get("fingers"),
                 pocket_depth=hold.params.get("pocket_depth"), rotation=rotation, pull=pull,
-                pull_dir=list(pull_dir), mesh=_mesh(hold.mesh), drilled=hasattr(hold, "hole"))
+                pull_dir=list(pull_dir), mesh=_mesh(hold.mesh), drilled=bool(getattr(hold, "hole_mm", 0.)),
+                library=hold.params.get("library", ""), name=hold.params.get("name", ""))
 
 
 def generate_hold(spec):
@@ -113,7 +120,7 @@ def _wall(spec):
 def _placed(h, index, with_mesh):
     out = dict(index=index, role=h.role, u=h.u, v=h.v, spin=h.spin, pull_deg=h.pull_deg, type=h.hold_type,
                seed=h.seed, difficulty=h.difficulty, radius=h.radius, size=list(h.size_mm), style=h.style,
-               hole_mm=h.hole_mm, moved=h.moved)
+               hole_mm=h.hole_mm, moved=h.moved, library=h.library, name=h.name)
     if with_mesh:
         out["mesh"] = _mesh(h.hold.mesh, h.hold.hole)       # origin on the bolt, as placed on the wall
     return out
@@ -143,8 +150,10 @@ def plan(spec, progress=print):
         raise ValueError("Clear the wall first: its routes were planned for another wall.")
     avoid = [(h.u, h.v, h.radius) for r in ROUTES.values() for h in r["holds"]]
     seed = str(spec.get("seed") or "0")
+    use = spec.get("library") or "off"
     holds, summary = R.plan_route(spec["grade"], wall, seed, int(spec.get("moves") or 0) or None, avoid,
-                                  bool(spec.get("feet", True)), float(spec.get("bolt", 10.5)), progress=progress)
+                                  bool(spec.get("feet", True)), float(spec.get("bolt", 10.5)), progress=progress,
+                                  library=_library() if use != "off" else None, use_library=use)
     name = f"{spec['grade']} seed {seed}"
     if any(r["name"] == name for r in ROUTES.values()):
         name += f" ({len(ROUTES) + 1})"
@@ -245,3 +254,65 @@ def hold_icon(hold_type, size=(76, 54)):
             f'<g stroke="#7f9796" stroke-width="2">{wall}</g>'
             f'<g stroke="#9edbc1" stroke-width="2.2" stroke-linecap="round">{lines}</g></svg>')
 
+
+# ---- Hold library -------------------------------------------------------------------------
+def _bytes(data):
+    """File contents from the page (a JavaScript Uint8Array under Pyodide) or bytes."""
+    return data.to_bytes() if hasattr(data, "to_bytes") else bytes(data)
+
+
+def _library():
+    if "library" not in LIBRARY:
+        LIBRARY["library"] = HoldLibrary("/library" if sys.platform == "emscripten" else default_folder())
+    return LIBRARY["library"]
+
+
+def library_list():
+    return [asdict(h) for h in _library().holds]
+
+
+def library_import(name, data, options):
+    """Add a 3D model file. options: type, units ('' = from the file, else mm), axis, turn, keep_hole.
+    Returns the new record."""
+    entry = _library().import_model(str(name), _bytes(data), options["type"], units=options.get("units") or None,
+                                    axis=options.get("axis") or "auto", turn_deg=float(options.get("turn", 0.)),
+                                    hole="detect" if options.get("keep_hole", True) else "drill")
+    return asdict(entry)
+
+
+def library_save(hold_id, name=""):
+    """Save a hold from the Hold view."""
+    return asdict(_library().save_generated(HOLDS[hold_id], name or None))
+
+
+def library_rename(hold_id, name):
+    _library().rename(hold_id, name)
+    return library_list()
+
+
+def library_retype(hold_id, hold_type):
+    _library().set_type(hold_id, hold_type)
+    return library_list()
+
+
+def library_remove(hold_id):
+    _library().remove(hold_id)
+    return library_list()
+
+
+def library_show(hold_id, wall_angle):
+    """Open a library hold in the Hold view, undrilled, rated on `wall_angle`."""
+    hold = _library().rated(hold_id, float(wall_angle))
+    view_id = _id("h")
+    HOLDS[view_id] = hold
+    return _hold(hold, view_id)
+
+
+def library_export():
+    """The library as a ZIP. Returns (file name, bytes)."""
+    return "hold-library.zip", np.frombuffer(_library().export_zip(), np.uint8)
+
+
+def library_merge(data):
+    """Add every hold in a library ZIP. Returns how many were added."""
+    return len(_library().merge_zip(_bytes(data)))

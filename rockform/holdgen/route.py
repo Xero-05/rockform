@@ -22,6 +22,7 @@ import numpy as np
 from ..model import GeometryError, default_profiles
 from .drill import drill
 from .generate import HoldRequest, generate, measure
+from .library import MATCH, USES
 from . import shapes
 
 # grade: (hand-hold difficulty as placed, hand move length in mm, foot-hold level 0-1 within its type)
@@ -79,6 +80,8 @@ class PlacedHold:
     style: str                    # the grab style closest to the expected pull
     hole_mm: float = 0.           # bore of the hole drilled through it, 0 = none
     hole_at: list = field(default_factory=lambda: [0., 0.])   # hole from the footprint centre, mm
+    library: str = ""             # id of the library hold it is, "" = generated for this route
+    name: str = ""                # the library hold's name
     file: str = ""
     report: dict = field(default_factory=dict, repr=False)
     hold: object = field(default=None, repr=False)            # the GeneratedHold, its mesh drilled
@@ -189,6 +192,33 @@ def _types_for(target, rng, previous):
     return order + [t for t in shapes.HOLD_TYPES if t not in order]
 
 
+def library_hold(library, target, pull_deg, wall_angle, profile, used, use, notes):
+    """The library hold that lands nearest `target` for this pull, drilled (unless it has its own hole) and turned
+    so its easiest pull points along `pull_deg`: (GeneratedHold, spin, as-placed difficulty), or None.
+    'prefer' takes it only within MATCH of the target; 'only' takes the nearest. Each library hold is used once
+    per route, unless 'only' has run out of them."""
+    if library is None or use == "off" or not library.holds:
+        return None
+    ranked = sorted((h.id in used, abs(library.quick_rating(h.id, wall_angle, pull_deg)[1] - target), h.id)
+                    for h in library.holds)
+    for again, gap, hold_id in ranked:
+        if again and use != "only":
+            break
+        if use == "prefer" and gap > MATCH:
+            break
+        try:
+            hold = library.rated(hold_id, wall_angle, profile)
+        except GeometryError as error:
+            notes.append(f"library hold {library.get(hold_id).name} skipped: {error}")
+            continue
+        if again:
+            notes.append(f"library hold {library.get(hold_id).name} is used more than once: the library ran out")
+        spin = 15. * round(wrap(pull_deg - hold.pull["best_angle_deg"]) / 15.)
+        used.add(hold_id)
+        return hold, spin, float(measure(hold.mesh, hold.request, pull_deg, 0., spin)[1])
+    return None
+
+
 def make_hold(target, pull_deg, wall_angle, seed, rng, previous, profile, tries=4, size=1.):
     """Generate a hold, drill it, turn it so its easiest pull points along `pull_deg`, and rate the drilled
     shape there. Tries other types, and corrects the generator's target once since turning and drilling
@@ -204,6 +234,7 @@ def make_hold(target, pull_deg, wall_angle, seed, rng, previous, profile, tries=
             if profile is not None:
                 try:
                     hold.mesh, hold.hole = drill(hold.mesh, profile)
+                    hold.hole_mm = profile.bore
                 except GeometryError as error:
                     notes.append(f"{hold_type} skipped: {error}")
                     break
@@ -222,13 +253,22 @@ def make_hold(target, pull_deg, wall_angle, seed, rng, previous, profile, tries=
     return (*best, notes)
 
 
-def plan_route(grade="V3", wall=None, seed=0, moves=None, avoid=(), foot_holds=True, bolt=10.5, progress=print):
+def plan_route(grade="V3", wall=None, seed=0, moves=None, avoid=(), foot_holds=True, bolt=10.5, progress=print,
+               library=None, use_library="prefer"):
     """Lay out start, hand, foot and finish holds for `grade` on `wall`, each drilled for its bolt (hands)
     or screw (feet, `bolt` = 0 for no holes). `avoid` is a list of (u, v, radius) already on the wall.
+    With a HoldLibrary, `use_library` 'prefer' takes a library hold for a hand hold when one lands within MATCH
+    of the difficulty asked for, and 'only' takes every hold, feet too, from the library.
     Returns (holds, summary dict)."""
     wall = wall or Wall()
     if grade not in GRADES:
         raise ValueError(f"Choose a grade from {', '.join(GRADES)}.")
+    if use_library not in USES:
+        raise ValueError(f"Choose how to use the library: {', '.join(USES)}.")
+    use = use_library if library is not None else "off"
+    if use == "only" and not library.holds:
+        raise ValueError("The hold library is empty: import or save holds first, or let the route generate them.")
+    used = set()
     target, move_len, foot_level = GRADES[grade]
     hold_target = max(target - steep_bonus(wall.angle), .5)
     bolt_profile = hardware("bolt", bolt) if bolt else None
@@ -295,7 +335,15 @@ def plan_route(grade="V3", wall=None, seed=0, moves=None, avoid=(), foot_holds=T
             pull = 0.        # matched with both hands: a comfortable start, a finish about as hard as the route
             want = max(hold_target - 1., .5) if role == "START" else .9 * hold_target
         hseed = f"{seed_base}-{i}"
-        hold, spin, placed, why = make_hold(want, pull, wall.angle, hseed, rng, types, bolt_profile)
+        why = []
+        picked = library_hold(library, want, pull, wall.angle, bolt_profile, used, use, why)
+        if picked is None:
+            if use == "only":
+                raise ValueError(f"No library hold can be placed for hold {i + 1} ({'; '.join(why) or 'none fit'}).")
+            hold, spin, placed, more = make_hold(want, pull, wall.angle, hseed, rng, types, bolt_profile)
+            why += more
+        else:
+            hold, spin, placed = picked
         notes += [f"hold {i + 1}: {w}" for w in why]
         r = _footprint_radius(hold.mesh, hold.hole)
         if not free(u, v, r):
@@ -309,12 +357,13 @@ def plan_route(grade="V3", wall=None, seed=0, moves=None, avoid=(), foot_holds=T
         types.append(hold.request.hold_type)
         if i > 0:
             costs.append(move_cost(placed, math.hypot(u - hands[i - 1][0], v - hands[i - 1][1]), wall.angle))
-        holds.append(PlacedHold(role, u, v, spin, round(pull, 1), hold.request.hold_type, hseed, placed, r,
-                                np.round(hold.mesh.extents, 1).tolist(), grab_style(pull),
-                                bolt_profile.bore if bolt_profile else 0., hole_at=_offset(hold), report=_report(hold),
-                                hold=hold))
+        holds.append(PlacedHold(role, u, v, spin, round(pull, 1), hold.request.hold_type, str(hold.request.seed),
+                                placed, r, np.round(hold.mesh.extents, 1).tolist(), grab_style(pull),
+                                float(getattr(hold, "hole_mm", 0.)), hole_at=_offset(hold), report=_report(hold),
+                                hold=hold, **_from_library(hold)))
         progress(f"{role:<6} {hold.request.hold_type:<6} at u={u:5.0f} v={v:5.0f} spin {spin:4.0f}  "
-                 f"pull {pull:4.0f}  difficulty {placed:.1f} (asked {want:.1f})")
+                 f"pull {pull:4.0f}  difficulty {placed:.1f} (asked {want:.1f})"
+                 + (f"  library: {hold.params['name']}" if "library" in hold.params else ""))
 
     if foot_holds:
         # Feet about a metre below each hand from the third hold on, and a pair under the start.
@@ -325,7 +374,11 @@ def plan_route(grade="V3", wall=None, seed=0, moves=None, avoid=(), foot_holds=T
             if v < 150:
                 continue
             hold = None
-            for attempt in range(4):
+            if use == "only":
+                hold = library_foot(library, wall.angle, screw_profile, used, notes)
+                if hold is None:
+                    break
+            for attempt in range(0 if hold else 4):
                 fseed = f"{seed_base}-f{k}" + (f"-{attempt}" if attempt else "")
                 hold = generate(HoldRequest(ftype, level=foot_level, seed=fseed, wall_angle=wall.angle,
                                             size=shapes.SIZES["XS"]))
@@ -333,6 +386,7 @@ def plan_route(grade="V3", wall=None, seed=0, moves=None, avoid=(), foot_holds=T
                 try:
                     if screw_profile:
                         hold.mesh, hold.hole = drill(hold.mesh, screw_profile)
+                        hold.hole_mm = screw_profile.bore
                     break
                 except GeometryError as error:
                     notes.append(f"foot {k + 1} seed {fseed}: {error}")
@@ -345,10 +399,10 @@ def plan_route(grade="V3", wall=None, seed=0, moves=None, avoid=(), foot_holds=T
                 continue
             taken.append((*spot, r))
             placed = measure(hold.mesh, hold.request)[1]
-            holds.append(PlacedHold("FOOT", *spot, 0., 0., ftype, fseed, placed, r,
+            holds.append(PlacedHold("FOOT", *spot, 0., 0., hold.request.hold_type, str(hold.request.seed), placed, r,
                                     np.round(hold.mesh.extents, 1).tolist(), "down",
-                                    screw_profile.bore if screw_profile else 0., hole_at=_offset(hold),
-                                    report=_report(hold), hold=hold))
+                                    float(getattr(hold, "hole_mm", 0.)), hole_at=_offset(hold),
+                                    report=_report(hold), hold=hold, **_from_library(hold)))
         progress(f"FEET   {sum(h.role == 'FOOT' for h in holds)} foot holds")
 
     score, estimate = estimate_grade(costs)
@@ -358,6 +412,7 @@ def plan_route(grade="V3", wall=None, seed=0, moves=None, avoid=(), foot_holds=T
                    hand_hold_target=round(hold_target, 2), move_length_mm=move_len,
                    hand_hole=bolt_profile.fit_summary() if bolt_profile else None,
                    foot_hole=screw_profile.fit_summary() if screw_profile else None, notes=notes,
+                   use_library=use, library_holds=sum(bool(h.library) for h in holds),
                    model="Prototype heuristic: score = hold difficulty as placed + reach + overhang; "
                          "the crux pair of moves counts as much as the average. Not calibrated on climbers.")
     # Rate the final positions the same way manual adjustments are rated (a hand nudged clear of another
@@ -366,6 +421,24 @@ def plan_route(grade="V3", wall=None, seed=0, moves=None, avoid=(), foot_holds=T
     for note in notes:
         progress("  note: " + note)
     return holds, summary
+
+
+def library_foot(library, wall_angle, profile, used, notes):
+    """The smallest library hold not used yet, drilled for the foot screw, or None when none is left."""
+    for entry in sorted((h for h in library.holds if h.id not in used), key=lambda h: max(h.size_mm[:2])):
+        try:
+            hold = library.rated(entry.id, wall_angle, profile)
+        except GeometryError as error:
+            notes.append(f"library hold {entry.name} skipped as a foot: {error}")
+            continue
+        used.add(entry.id)
+        return hold
+    notes.append("The library ran out of holds for feet.")
+    return None
+
+
+def _from_library(hold):
+    return dict(library=hold.params["library"], name=hold.params["name"]) if "library" in hold.params else {}
 
 
 def _report(hold):
@@ -404,7 +477,7 @@ def write_route(holds, summary, wall, out, route_name="Generated route", color=N
                         pocket_depth=0., bolt=h.hole_mm),
             role=h.role, route=1, on_wall=True, u=h.u, v=h.v, spin=h.spin,
             holdgen=dict(type=h.hold_type, seed=h.seed, difficulty=round(h.difficulty, 2), pull_deg=h.pull_deg,
-                         style=h.style, grade=summary["requested_grade"])))
+                         style=h.style, grade=summary["requested_grade"], library=h.library, name=h.name)))
     layout = dict(format=LAYOUT_FORMAT, version=LAYOUT_VERSION,
                   wall=dict(width=wall.width, height=wall.height, angle=wall.angle, bolt_spacing=wall.bolt_spacing,
                             thickness=wall.thickness, panel_width=wall.panel_width, panel_height=wall.panel_height),
@@ -493,12 +566,21 @@ def main(argv=None):
     parser.add_argument("--name", default=None, help="route name (default: '<grade> <seed>')")
     parser.add_argument("--color", type=float, nargs=3, help="route colour, 0-1 RGB")
     parser.add_argument("--bolt", type=float, default=10.5, help="bolt hole diameter through hand holds (feet get a screw hole), 0 for no holes")
+    parser.add_argument("--library", type=Path, nargs="?", const=True, default=None,
+                        help="use holds from a hold library (default folder if none is given)")
+    parser.add_argument("--use-library", choices=USES, default="prefer",
+                        help="prefer: library holds that land near the difficulty asked for; only: library holds only")
     parser.add_argument("--validate", action="store_true", help="run the (slower) solid check on every hold")
     parser.add_argument("--out", type=Path, default=Path("generated-route"))
     args = parser.parse_args(argv)
     wall = Wall(args.wall_width, args.wall_height, args.wall_angle, args.bolt_spacing)
     avoid = json.loads(args.avoid.read_text(encoding="utf-8")) if args.avoid else ()
-    holds, summary = plan_route(args.grade, wall, args.seed, args.moves, avoid, not args.no_feet, args.bolt)
+    library = None
+    if args.library:
+        from .library import HoldLibrary
+        library = HoldLibrary(None if args.library is True else args.library)
+    holds, summary = plan_route(args.grade, wall, args.seed, args.moves, avoid, not args.no_feet, args.bolt,
+                                library=library, use_library=args.use_library)
     if args.validate:
         from ..geometry import validate_solid
         for h in holds:
