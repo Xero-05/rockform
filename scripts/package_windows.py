@@ -125,6 +125,7 @@ def package(bundle: Path, output: Path, app='rockform'):
         for path in files:
             archive.write(path, f'{stem}/{path.relative_to(bundle).as_posix()}')
         archive.write(ROOT / spec['start_here'], f'{stem}/START-HERE.txt')
+        archive.write(ROOT / 'LICENSE', f'{stem}/LICENSE.txt')
         archive.writestr(f'{stem}/build-info.json', manifest)
         archive.writestr(f'{stem}/THIRD-PARTY-NOTICES.md', '\n'.join(notices) + '\n')
         for name, path in sorted(license_files.items()):

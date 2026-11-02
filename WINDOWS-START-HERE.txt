@@ -86,7 +86,7 @@ The iPhone capture companion is a separate source project, not part of this ZIP.
 
 PROJECT AND UPDATES
 https://github.com/Xero-05/rockform
-This repository is private: teammates need an invitation and their own GitHub login.
+The repository is public and released under the MIT License (see LICENSE there).
 No personal scans, Apple signing files, or account credentials are included.
 
 BUILD AND LIBRARIES
