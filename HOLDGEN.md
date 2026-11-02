@@ -177,7 +177,8 @@ The **Route** tab of the window does the same without Blender.
 
 ### In the browser
 
-[web/](web/) is the hold generator and route setter as a web page. It has the same Hold and Route views as
+[web/](web/) is the hold generator and route setter as a web page, published at
+https://xero-05.github.io/rockform/. It has the same Hold and Route views as
 the window. All of it runs in the browser tab:
 
 - **Python:** the hold generator's own Python code runs under [Pyodide](https://pyodide.org) (Python
@@ -193,7 +194,8 @@ A route takes about 10 s to plan, roughly twice the desktop time.
 ```
 
 `web/build.py` zips only the modules the page needs: `rockform/model.py` and the `rockform/holdgen`
-generator, rating, drilling, route and `webapi` modules. Any static host can then serve `web/`. Two pieces
+generator, rating, drilling, route and `webapi` modules. Any static host can then serve `web/`. The
+`Publish the web app` workflow does that on GitHub Pages whenever the page or those modules change on main. Two pieces
 make the generator browser-safe, and the desktop runs the same code:
 
 - `rockform/holdgen/drill.py` finds the surface above a bolt with NumPy vertical rays, where the scan app
