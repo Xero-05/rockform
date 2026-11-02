@@ -5,7 +5,7 @@ and rates them by how a climber's pull interacts with the surface. It is separat
 nothing in the scan, repair or mount pipeline changes.
 
 ```powershell
-.venv\Scripts\python.exe -m rockform.holdgen.app                       # window with heat map and pull-angle chart
+.venv\Scripts\python.exe -m rockform.holdgen.app                       # window: Hold tab (heat map, pull chart), Route tab
 .venv\Scripts\python.exe -m rockform.holdgen "hard sloper on a 30 degree overhang" --out holds
 .venv\Scripts\python.exe -m rockform.holdgen --type crimp --difficulty 7 --seed 1 --count 10 --out holds
 ```
@@ -166,5 +166,97 @@ Calibration (seed 3, achievable difficulty from easiest to hardest shape):
   outward, or body position.
 - Face visibility and occlusion are not checked. A surface counts if its normal points the right way,
   even where fingers cannot reach it.
-- Generated holds have no mounting holes. Mount and structural qualification remain outside this tool,
-  as with the scan workflow.
+- Single generated holds have no mounting holes; holds made for a route (below) are drilled. Structural
+  qualification remains outside this tool, as with the scan workflow.
+
+## From holds to a route (prototype)
+
+`rockform.holdgen.route` plans a boulder route for a grade and wall, generates every hold for it, and
+writes it as a layout for the Blender **Rock Wall Builder** add-on ([blender/rock_wall_builder.py](blender/rock_wall_builder.py)).
+The **Route** tab of the window does the same without Blender.
+
+### The Route tab
+
+1. **Wall:** width, height, bolt grid and angle (slab to 45°).
+2. **Route:** choose a grade (V0–V8) and a variation. **Hand moves** stops the route early; by default it
+   climbs to the top. Also set the bolt hole size and whether to add foot holds. **Add route to wall**
+   plans the route in the background. Each new route keeps clear of the routes already on the wall.
+   **Remove last route** and **Clear wall** take routes off again. Changing the wall's size or angle
+   warns you to clear the wall, because positions, turns and ratings belong to the wall they were planned on.
+3. **3D view:** the wall tilted to its angle, its bolt grid, every hold drilled and turned as placed, and a
+   line through each route's hand holds. Labels give each hand hold's difficulty as placed (S = start,
+   F = finish). **Colour by** role, difficulty or route.
+4. **Route card:** the estimated grade against the requested one, the score and each move's score.
+5. **Holds table:** every hold with its role, type, difficulty as placed, grab style, turn, position and
+   size. Click a row to outline that hold. **Inspect in hold view** (or double-click the row) opens it in
+   the **Hold** tab, drilled, turned and pulled as the route uses it, with its heat map and pull-angle
+   chart. Changing a control there generates a new, undrilled hold.
+6. **Moving holds by hand**, in the 3D view as in the Blender add-on:
+   - Hovering over a hold shows a hand cursor. Click it to select it.
+   - Drag it and it snaps from bolt to bolt, with a live preview and a warning if it would overlap.
+     Turn it while dragging with the mouse wheel, 15° per notch. Release to place it.
+   - **Q / E** turn the selected hold 15°.
+   - Dragging empty wall or background still orbits the camera, and the wheel zooms.
+   - A click near a small hold also picks it, since holds are only a few pixels wide when the whole wall
+     is in view.
+
+   The route line and labels update when you drop the hold. Or select a hold in the table and use the
+   buttons under it:
+   - **← ↑ ↓ →** (Ctrl+arrow keys) move it one bolt.
+   - **↺15° / ↻15°** (Ctrl+[ / Ctrl+]) turn it.
+   - The two position boxes take a typed position, snapped to the nearest bolt.
+   - **Face the pull** turns it so its best grip faces the pull it gets on the route.
+
+   Every change re-rates the route. Expected pulls follow the new positions, and each hand hold's
+   difficulty as placed, the move scores and the estimated grade update. The hand holds keep their
+   start-to-finish order. Moved holds are marked ✎ and exported as `moved`. Holds whose footprint circles
+   touch, or that go past the wall's edge, are marked ⚠ with an orange outline; this warns but doesn't
+   prevent it. **Undo** (Ctrl+Z) steps back through the changes.
+7. **Export wall…** writes one folder per route (STLs, reports, `route.json`, `route.svg`) and a
+   `layout.json` with every route, which the Blender add-on's **Load Layout** opens.
+
+### Command line
+
+```powershell
+.venv\Scripts\python.exe -m rockform.holdgen.route --grade V3 --wall-angle 20 --out route-v3
+.venv\Scripts\python.exe -m rockform.holdgen.route --grade V6 --wall-width 3000 --wall-height 4000 --seed 7 --out route-v6
+```
+
+1. **Layout.** A start hold at about 1.3 m, hand moves zig-zagging to the top of the wall at the grade's move
+   length (430 mm at V0 to 720 mm at V8), feet about a metre below the hands and a pair under the start. Every
+   hold sits on the wall's bolt grid and keeps clear of holds already there (`--avoid`, a JSON list of
+   `[u, v, radius]`).
+2. **Holds.** Each hand hold is generated to the grade's difficulty, lowered by 0.5 per 15° of overhang
+   since the wall already makes it harder. Types follow the difficulty: jugs when easy, then edges, slopers,
+   pinches and pockets, then crimps. Start holds are a step easier; foot holds are XS jugs or edges.
+3. **Drilling.** Rockform's mount cutter drills each hold: the prototype 10 mm bolt with an 18.5 mm
+   counterbore through hand holds, the 5 mm countersunk screw through feet. The hole goes as near the centre
+   as it fits (a jug's centre is under its lip). A type that cannot take one is skipped.
+4. **Orientation and rating.** On the hand you pull with, the hips hang about 700 mm below, halfway to the
+   next hold. Each hold is turned, in the add-on's 15° steps, so its easiest pull points that way. It is
+   then rated for that pull on the drilled shape.
+5. **Estimated grade.** Each move scores the hold's difficulty as placed, plus 0.35 per 100 mm of reach
+   beyond 430 mm, plus the overhang term. The route score averages the mean move with the hardest pair of
+   moves and is reported as the nearest V grade. This heuristic is not calibrated against climbers.
+
+The output folder holds `holds/*.stl` and `*.json` (the hold report plus its placement), `route.json`,
+`route.svg` (front view with expected pulls) and `layout.json`.
+
+### In Blender
+
+Open the Rock Wall Builder script in Blender's Text Editor and choose **Run Script**, then open
+**N → Rock Wall → 6b. Generate a Route**. Choose a grade and seed and **Generate Route**. The add-on runs the
+command above for the current wall, its size, angle and bolt grid, with every hold already on it as an
+obstacle. The new holds arrive as a new route in panel 6, with start, hand, foot and finish roles, coloured by
+route. The panel lists each hold's type, difficulty as placed and grab style, and the route's requested and
+estimated grade. Changing the wall angle afterward shows a warning, because the ratings depend on it.
+**Rockform Python** must point at this checkout's `.venv\Scripts\python.exe`. The add-on finds it when the
+script is opened from `blender/`. **Load Layout** in panel 8 also opens a generated `layout.json`; it
+replaces the current holds.
+
+Generated holds are scans to the add-on, so **7. Manufacturing**, the setter's sheet and STL export work on
+them. Their holes are already in the STL ('drilled' in the layout), so the add-on puts each hold's origin on
+its hole instead of cutting another. Known check results: every hold has a **crisp edges** warning, mostly from
+the counterbore rim. Jugs can fail **no flat mounting back**, because the incut lip overhangs the back by more
+than the add-on's 85 % rule allows.
+

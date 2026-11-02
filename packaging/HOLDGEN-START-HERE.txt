@@ -1,0 +1,34 @@
+ROCKFORM HOLD GENERATOR - WINDOWS PROTOTYPE
+
+START THE APP
+1. Use Extract All to unpack the entire ZIP.
+2. Open the extracted folder and double-click RockformHoldgen.exe.
+
+Keep RockformHoldgen.exe and the _internal folder together. Do not run the app
+from inside the ZIP. Python and development tools are not needed. This is a
+portable app: there is no installer. The executable is not code-signed;
+Windows may identify its publisher as unknown.
+
+USE
+Pick a hold type and size, set the difficulty, wall angle and rotation, or type
+a description such as "hard 2-finger pocket on a 30 degree overhang" or
+"2 inch crimp". Click the pull chart or a grab style to see the difficulty for
+that pull. Export writes an STL in millimeters plus a JSON report.
+
+ROUTES
+The Route tab sets whole boulder routes of generated holds on a wall. Set the
+wall, pick a grade (V0-V8) and click Add route to wall. Each hold is drilled for
+its bolt, turned so its best grip faces the climber's pull, and rated as placed.
+Drag holds in the 3D view to move them bolt to bolt (mouse wheel or Q / E turns
+them while dragging); the route is re-rated when you drop them. Inspect in hold
+view opens a hold in the Hold tab. Export wall writes the STLs, reports, a
+route.svg per route and a layout.json for the Blender Rock Wall Builder add-on.
+The estimated grade is a prototype heuristic, not calibrated on climbers.
+
+HOLDGEN.md (inside _internal) explains how difficulty is rated. The score is a
+holding-area proxy, not a climbing grade.
+
+SELF-TEST
+RockformHoldgen.exe --self-test <folder>
+generates and validates one hold of each type, then plans, drills, validates
+and exports one V3 route, into <folder>.
