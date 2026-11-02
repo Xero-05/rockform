@@ -17,7 +17,8 @@ import zipfile
 WEB = Path(__file__).resolve().parent
 ROOT = WEB.parent
 MODULES = ["rockform/__init__.py", "rockform/model.py"] + [
-    f"rockform/holdgen/{name}.py" for name in ("__init__", "shapes", "holding", "generate", "drill", "route", "webapi")]
+    f"rockform/holdgen/{name}.py" for name in ("__init__", "shapes", "holding", "generate", "drill", "library", "route",
+                                           "webapi")]
 
 
 def build():

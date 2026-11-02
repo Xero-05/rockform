@@ -32,6 +32,15 @@ async function start() {
   say("Loading the hold generator…");
   const archive = await (await fetch(new URL("rockform.zip", import.meta.url))).arrayBuffer();
   py.unpackArchive(archive, "zip", { extractDir: "/app" });
+  // The hold library lives in /library, kept in this browser's IndexedDB between visits.
+  py.FS.mkdirTree("/library");
+  try {
+    py.FS.mount(py.FS.filesystems.IDBFS, {}, "/library");
+    await new Promise((resolve, reject) => py.FS.syncfs(true, (error) => error ? reject(error) : resolve()));
+    self.librarySaved = true;
+  } catch (error) {
+    self.librarySaved = false;        // e.g. private browsing: the library lasts until the tab closes
+  }
   py.runPython(`
 import sys
 sys.path.insert(0, "/app")
@@ -80,6 +89,8 @@ onmessage = async ({ data: { id, fn, args = [] } }) => {
       call.destroy();
     }
     pyArgs.forEach((a) => a && a.destroy && a.destroy());
+    if (self.librarySaved && /^library_(import|save|rename|retype|remove|merge)$/.test(fn))
+      await new Promise((resolve) => py.FS.syncfs(false, resolve));
     postMessage({ id, ok: true, result }, buffers(result));
   } catch (error) {
     // Python errors end with the exception line; show that, not the traceback.

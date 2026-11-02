@@ -171,14 +171,15 @@ Calibration (seed 3, achievable difficulty from easiest to hardest shape):
 
 ## From holds to a route (prototype)
 
-`rockform.holdgen.route` plans a boulder route for a grade and wall, generates every hold for it, and
-writes it as a layout for the Blender **Rock Wall Builder** add-on ([blender/rock_wall_builder.py](blender/rock_wall_builder.py)).
-The **Route** tab of the window does the same without Blender.
+`rockform.holdgen.route` plans a boulder route for a grade and wall, generates its holds or takes them from the
+[hold library](#the-hold-library), and writes it as a layout for the Blender **Rock Wall Builder** add-on
+([blender/rock_wall_builder.py](blender/rock_wall_builder.py)). The **Route** tab of the window does the same
+without Blender.
 
 ### In the browser
 
 [web/](web/) is the hold generator and route setter as a web page, published at
-https://xero-05.github.io/rockform/. It has the same Hold and Route views as
+https://xero-05.github.io/rockform/. It has the same Hold, Route and Library views as
 the window. All of it runs in the browser tab:
 
 - **Python:** the hold generator's own Python code runs under [Pyodide](https://pyodide.org) (Python
@@ -194,7 +195,7 @@ A route takes about 10 s to plan, roughly twice the desktop time.
 ```
 
 `web/build.py` zips only the modules the page needs: `rockform/model.py` and the `rockform/holdgen`
-generator, rating, drilling, route and `webapi` modules. Any static host can then serve `web/`. The
+generator, rating, drilling, library, route and `webapi` modules. Any static host can then serve `web/`. The
 `Publish the web app` workflow does that on GitHub Pages whenever the page or those modules change on main. Two pieces
 make the generator browser-safe, and the desktop runs the same code:
 
@@ -213,7 +214,9 @@ so the Blender add-on's **Load Layout** opens it wherever it is unzipped.
 
 1. **Wall:** width, height, bolt grid and angle (slab to 45°).
 2. **Route:** choose a grade (V0–V8) and a variation. **Hand moves** stops the route early; by default it
-   climbs to the top. Also set the bolt hole size and whether to add foot holds. **Add route to wall**
+   climbs to the top. Also set the bolt hole size, whether to add foot holds and how to use the
+   [hold library](#the-hold-library): **Use library holds that fit**, **Only library holds** or
+   **Generate every hold**. **Add route to wall**
    plans the route in the background. Each new route keeps clear of the routes already on the wall.
    **Remove last route** and **Clear wall** take routes off again. Changing the wall's size or angle
    warns you to clear the wall, because positions, turns and ratings belong to the wall they were planned on.
@@ -221,8 +224,8 @@ so the Blender add-on's **Load Layout** opens it wherever it is unzipped.
    line through each route's hand holds. Labels give each hand hold's difficulty as placed (S = start,
    F = finish). **Colour by** role, difficulty or route.
 4. **Route card:** the estimated grade against the requested one, the score and each move's score.
-5. **Holds table:** every hold with its role, type, difficulty as placed, grab style, turn, position and
-   size. Click a row to outline that hold. **Inspect in hold view** (or double-click the row) opens it in
+5. **Holds table:** every hold with its role, type (and name, for a library hold), difficulty as placed,
+   grab style, turn, position and size. Click a row to outline that hold. **Inspect in hold view** (or double-click the row) opens it in
    the **Hold** tab, drilled, turned and pulled as the route uses it, with its heat map and pull-angle
    chart. Changing a control there generates a new, undrilled hold.
 6. **Moving holds by hand**, in the 3D view as in the Blender add-on:
@@ -254,6 +257,7 @@ so the Blender add-on's **Load Layout** opens it wherever it is unzipped.
 ```powershell
 .venv\Scripts\python.exe -m rockform.holdgen.route --grade V3 --wall-angle 20 --out route-v3
 .venv\Scripts\python.exe -m rockform.holdgen.route --grade V6 --wall-width 3000 --wall-height 4000 --seed 7 --out route-v6
+.venv\Scripts\python.exe -m rockform.holdgen.route --grade V2 --library --use-library only --out route-library
 ```
 
 1. **Layout.** A start hold at about 1.3 m, hand moves zig-zagging to the top of the wall at the grade's move
@@ -263,6 +267,8 @@ so the Blender add-on's **Load Layout** opens it wherever it is unzipped.
 2. **Holds.** Each hand hold is generated to the grade's difficulty, lowered by 0.5 per 15° of overhang
    since the wall already makes it harder. Types follow the difficulty: jugs when easy, then edges, slopers,
    pinches and pockets, then crimps. Start holds are a step easier; foot holds are XS jugs or edges.
+   With `--library` (the app's library folder, or a folder you name), library holds are used as described in
+   [Routes from the library](#routes-from-the-library).
 3. **Drilling.** Rockform's mount cutter drills each hold: the prototype 10 mm bolt with an 18.5 mm
    counterbore through hand holds, the 5 mm countersunk screw through feet. The hole goes as near the centre
    as it fits (a jug's centre is under its lip). A type that cannot take one is skipped.
@@ -275,6 +281,56 @@ so the Blender add-on's **Load Layout** opens it wherever it is unzipped.
 
 The output folder holds `holds/*.stl` and `*.json` (the hold report plus its placement), `route.json`,
 `route.svg` (front view with expected pulls) and `layout.json`.
+
+## The hold library
+
+The **Library** tab keeps holds you already have, as 3D models, and holds saved from the Hold tab. Routes can
+use them instead of generating every hold.
+
+- **Import model files…** adds STL, OBJ, PLY, OFF, GLB or glTF models. Choose:
+  - **Rate as:** the hold type it is rated as. A pinch is scored as a squeeze; every other type is hung from.
+    You can change it later in the table, and the hold is re-rated.
+  - **Units:** STL has none, so choose millimetres, centimetres, metres or inches. An OBJ's
+    `# units:` comment is read when this is left on *From the file*. A size outside 15–1000 mm gets a warning.
+  - **Out of the wall:** the model's axis that points away from the wall. *Find the flat back* picks the axis
+    whose end is the largest flat face. Use *+Z* for print-ready models lying on their back, *+Y* for Y-up
+    exports (glTF, many OBJ files). **Turn** rotates it on the wall if it comes in upside down or sideways.
+  - **Keep a bolt hole it already has:** vertical rays through the footprint find a hole (3–30 mm) that the
+    hold surrounds, nearest the centre. Routes then bolt it there and don't drill it. Without a hole, the hold
+    is drilled for the route's bolt each time it's placed, like a generated hold. Only closed (watertight)
+    models can be drilled.
+- **Save to library** in the Hold tab keeps the hold shown there. A drilled hold opened from a route keeps its hole.
+- The table shows each hold's size, bolt hole and **Vertical**: its easiest pull on a vertical wall, turned
+  to face it. Double-click a name to rename it. **Show in hold view** rates it in the Hold tab on the wall
+  angle set there, with its heat map and pull-angle chart. **Remove** deletes it from the library; routes
+  already on the wall keep it.
+- **Export library…** writes a ZIP (`library.json` and `holds/*.stl`) and **Add from ZIP…** merges one, to
+  share holds or move them to another computer.
+
+The window keeps the library in `%APPDATA%\Rockform\hold-library` (or the folder named by the
+`ROCKFORM_HOLD_LIBRARY` environment variable). Each hold is an STL in millimetres in holdgen's frame: X across,
+Y up, Z out of the wall, back on Z = 0, centred on its footprint. The browser app keeps its library in the
+browser's own storage (IndexedDB), so it stays between visits on that browser. Export it to back it up.
+
+```powershell
+.venv\Scripts\python.exe -m rockform.holdgen.library add blue-jug.stl red-crimp.obj --type jug --units mm
+.venv\Scripts\python.exe -m rockform.holdgen.library list
+.venv\Scripts\python.exe -m rockform.holdgen.library remove blue-jug
+```
+
+### Routes from the library
+
+- **Use library holds that fit** (the default when the library has holds): for each start, hand and finish
+  hold, the library hold whose difficulty as placed lands nearest the one asked for is used if it's within 1.
+  Otherwise the hold is generated. Feet are generated.
+- **Only library holds:** every hold is the nearest library hold, and feet are the smallest holds left. When
+  the library runs out, hand holds are used again (with a note) and the remaining feet are left off.
+- **Generate every hold:** the library is not used.
+
+Each library hold is used once per route. It is turned in 15° steps so its easiest pull faces the climber's
+pull, rated on the route's wall as placed, and scored in the estimated grade like any other hold. The holds
+table and `layout.json` (`holdgen.library`, `holdgen.name`) say which holds came from the library. A small
+library limits how close the route gets to its grade: the route card's estimate shows the result.
 
 ### In Blender
 

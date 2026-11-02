@@ -1,5 +1,6 @@
 """Hold generator window: choose a type and difficulty, inspect grip as a heat map, see how difficulty
-changes with the angle of pull, and export STL. The Route tab sets whole routes of generated holds on a wall."""
+changes with the angle of pull, and export STL. The Route tab sets whole routes of holds on a wall; the Library tab
+keeps imported 3D models and saved holds for routes to use."""
 from __future__ import annotations
 
 import json
@@ -15,6 +16,7 @@ from ..geometry import validate_solid
 from .shapes import HOLD_TYPES, HOLD_INFO, SIZES, build
 from .holding import orientation
 from .generate import HoldRequest, generate, parse_description, measure, best_mode, pull_range, GRAB_STYLES, GRAB_NAMES
+from .library import HoldLibrary, default_folder
 
 EXTRA_STYLE = """
 QToolButton#holdType { background: #18282f; border: 1px solid #2d4147; border-radius: 8px; padding: 4px;
@@ -447,9 +449,15 @@ class GeneratorWindow(QtWidgets.QMainWindow):
         self.holding_line = label("")
         c.addWidget(self.holding_line)
         c.addStretch()
+        row = QtWidgets.QHBoxLayout()
+        self.save_button = button("Save to library", self.save_to_library)
+        self.save_button.setToolTip("Keep this hold in the Library tab, so routes can use it")
+        self.save_button.setEnabled(False)
+        row.addWidget(self.save_button)
         self.export_button = button("Export STL + report…", self.export, primary=True)
         self.export_button.setEnabled(False)
-        c.addWidget(self.export_button)
+        row.addWidget(self.export_button)
+        c.addLayout(row)
         frame.setMinimumWidth(260)
         results.addWidget(frame, 1)
         bottom = QtWidgets.QWidget()
@@ -464,11 +472,20 @@ class GeneratorWindow(QtWidgets.QMainWindow):
         layout = QtWidgets.QHBoxLayout(central)
         layout.addWidget(scroll)
         layout.addWidget(right, 1)
-        from .route_app import RouteView      # it imports this module's helpers
-        self.routes = RouteView(inspect=self.inspect_placed)
+        try:
+            self.library = HoldLibrary()
+        except Exception as error:          # an unreadable library.json: start a new one beside it
+            self.library = HoldLibrary(default_folder().with_name("hold-library-new"))
+            self.message.setText(f"Could not open the hold library ({error}); using {self.library.folder}.")
+        from .route_app import RouteView      # these import this module's helpers
+        from .library_app import LibraryView
+        self.routes = RouteView(inspect=self.inspect_placed, library=self.library)
+        self.library_view = LibraryView(self.library, inspect=self.inspect_library)
         self.tabs = QtWidgets.QTabWidget()
         self.tabs.addTab(central, "Hold")
         self.tabs.addTab(self.routes, "Route")
+        self.tabs.addTab(self.library_view, "Library")
+        self.tabs.currentChanged.connect(lambda i: self.routes.library_changed() if i == 1 else None)
         self.setCentralWidget(self.tabs)
 
         for s in (self.difficulty, self.wall):
@@ -555,6 +572,7 @@ class GeneratorWindow(QtWidgets.QMainWindow):
                              f"({inches} in) · "
                              f"{h.mesh.volume / 1000:.0f} cm³<br>Holding area {h.holding_area_mm2:.0f} mm² straight down{extra}")
         self.export_button.setEnabled(True)
+        self.save_button.setEnabled("library" not in h.params)
         same = self.shown_type == request.hold_type and pull_dir is None
         self.shown_type = request.hold_type
         self.refresh_placement(keep_camera=same, pull_dir=pull_dir or (self.pull_dir if same else (0., 0.)))
@@ -570,6 +588,31 @@ class GeneratorWindow(QtWidgets.QMainWindow):
         self.present(placed.hold.request, pull_dir=(placed.pull_deg, 0.),
                      note=f"{placed.role.capitalize()} hold from the Route tab, as placed: drilled for its bolt, "
                           f"turned {rotation_text(placed.spin).lower()}.")
+
+    def inspect_library(self, hold_id):
+        """Show a library hold, undrilled, rated on the wall angle set in this tab."""
+        entry = self.library.get(hold_id)
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        try:
+            self.hold = self.library.rated(hold_id, float(self.wall.value()))
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+        self.tabs.setCurrentIndex(0)
+        self.present(self.hold.request, note=f"Library hold “{entry.name}”, rated as a {entry.type}. Changing the "
+                                             "type, difficulty, size or variation generates a new hold.")
+
+    def save_to_library(self):
+        h = self.hold
+        if h is None:
+            return
+        default = f"{h.request.hold_type.capitalize()} {h.difficulty:.1f} (variation {h.request.seed})"
+        name, ok = QtWidgets.QInputDialog.getText(self, "Save to library", "Name:", text=default)
+        if not ok:
+            return
+        entry = self.library.save_generated(h, name or default)
+        self.save_button.setEnabled(False)
+        self.library_view.refresh(select=[entry.id])
+        self.statusBar().showMessage(f"Saved “{entry.name}” to the hold library", 8000)
 
     def placement(self):
         return float(self.rotation.value())
