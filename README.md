@@ -24,7 +24,7 @@ No Python installation is needed. Keep the `_internal` folder beside the executa
 | App | Release | Executable |
 | --- | --- | --- |
 | Rockform (scan to hold) | [latest](https://github.com/Xero-05/rockform/releases/latest) | `Rockform.exe` |
-| Hold generator and route setter | [holdgen-v0.2.0](https://github.com/Xero-05/rockform/releases/tag/holdgen-v0.2.0) (pre-release) | `RockformHoldgen.exe` |
+| Hold generator and route setter (or [in the browser](https://xero-05.github.io/rockform/)) | [holdgen-v0.2.0](https://github.com/Xero-05/rockform/releases/tag/holdgen-v0.2.0) (pre-release) | `RockformHoldgen.exe` |
 
 The executables are not code-signed, so Windows may report an unknown publisher. Each ZIP contains
 **START-HERE.txt**, a `build-info.json` naming its source commit, and the notices of its bundled libraries.
@@ -34,9 +34,9 @@ The repository excludes personal scans, local tools and packaged binaries. For t
 algorithms, data formats, internal APIs and build process, see the
 [Rockform Technical Report](ROCKFORM-TECHNICAL-REPORT.md).
 
-The hold generator and route setter also run in a web browser, with nothing to install. [web/](web/) is
-the same Python code running under Pyodide, a three.js 3D view, and nothing uploaded.
-Run `.venv\Scripts\python.exe web\build.py --serve` and open http://localhost:8000.
+**Try the hold generator and route setter in your browser: https://xero-05.github.io/rockform/**. There's
+nothing to install, and nothing is uploaded. [web/](web/) runs the same Python code under Pyodide with a
+three.js 3D view. To run it locally, use `.venv\Scripts\python.exe web\build.py --serve` and open http://localhost:8000.
 
 ## Hold generator and route setter
 
