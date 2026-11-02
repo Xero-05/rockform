@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "holdgen-web",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["web/build.py", "--serve", "--port", "8000"],
+      "port": 8000
+    }
+  ]
+}

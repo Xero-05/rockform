@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rockform Hold Generator</title>
+  <meta name="description" content="Generate climbing holds to a measured difficulty and set graded boulder routes on a wall, in your browser.">
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">
+    { "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/" } }
+  </script>
+</head>
+<body>
+  <header>
+    <div class="brand"><span class="eyebrow">ROCKFORM</span><span class="title">Hold generator</span></div>
+    <nav role="tablist">
+      <button role="tab" id="tab-hold" aria-selected="true" data-view="hold">Hold</button>
+      <button role="tab" id="tab-route" aria-selected="false" data-view="route">Route</button>
+    </nav>
+    <div id="status" class="status">Starting…</div>
+  </header>
+
+  <main>
+    <!-- Hold view ------------------------------------------------------------------------------>
+    <section id="view-hold" class="view">
+      <aside class="side">
+        <h2>1 Hold type</h2>
+        <div id="types" class="types"></div>
+        <p id="type-info" class="muted"></p>
+        <div class="row"><span class="muted">Size</span><div id="sizes" class="segmented"></div></div>
+        <p id="size-info" class="muted"></p>
+
+        <h2>2 Difficulty</h2>
+        <div class="slider-row"><input id="difficulty" type="range" min="0" max="100" value="30"><span id="difficulty-value" class="value"></span></div>
+        <div class="ends muted"><span>Easy: lots of positive surface</span><span>Hard: very little</span></div>
+        <p id="reach" class="muted"></p>
+
+        <h2>3 Wall and placement</h2>
+        <div class="slider-row"><input id="wall" type="range" min="-30" max="90" step="5" value="0"><span id="wall-value" class="value"></span></div>
+        <div class="presets" data-target="wall">
+          <button data-value="-10">Slab</button><button data-value="0">Vertical</button><button data-value="30">30°</button><button data-value="45">45°</button><button data-value="90">Roof</button>
+        </div>
+        <p class="muted">Rotation on the wall turns the bolted hold while gravity stays put. The shape does not change.</p>
+        <div class="slider-row"><input id="rotation" type="range" min="-180" max="180" step="5" value="0"><span id="rotation-value" class="value"></span></div>
+        <div class="presets" data-target="rotation">
+          <button data-value="-90">↻90°</button><button data-value="-45">↻45°</button><button data-value="0">Upright</button><button data-value="45">↺45°</button><button data-value="90">↺90°</button>
+        </div>
+
+        <h2>4 Variation</h2>
+        <div class="row"><input id="seed" type="text" value="1" aria-label="Variation"><button id="randomise" class="primary">New variation</button></div>
+        <fieldset>
+          <legend>Or describe it</legend>
+          <input id="description" type="text" placeholder="e.g. hard crimp on a 30 degree overhang">
+          <button id="describe">Generate from description</button>
+        </fieldset>
+        <p id="hold-message" class="muted message"></p>
+      </aside>
+
+      <div class="stage">
+        <div class="toolbar">
+          <span id="hold-title" class="section"></span>
+          <label class="muted">Overlay
+            <select id="overlay">
+              <option value="grip">Grip quality: every surface</option>
+              <option value="scored">Scored area: one hand's grip</option>
+              <option value="plain">Plain</option>
+            </select>
+          </label>
+          <button id="hold-reset">Reset view</button>
+        </div>
+        <div id="hold-canvas" class="canvas"><div class="legend" id="grip-legend"><span>Grip: none</span><i></i><span>best</span></div></div>
+        <div class="cards">
+          <div class="card">
+            <span class="eyebrow">DIFFICULTY</span>
+            <div class="big-row"><span id="big" class="big">–</span><span id="word" class="section"></span></div>
+            <canvas id="range-bar" height="38"></canvas>
+            <p id="range-text" class="muted"></p>
+            <p class="muted">How it grabs (click to show on the hold):</p>
+            <div id="grabs" class="grabs"></div>
+          </div>
+          <div class="card">
+            <span class="eyebrow">DIFFICULTY BY ANGLE OF PULL</span>
+            <canvas id="pull-chart" height="190"></canvas>
+          </div>
+          <div class="card">
+            <span class="eyebrow">HOLD</span>
+            <p id="details"></p>
+            <p id="holding-line" class="muted"></p>
+            <button id="export-hold" class="primary" disabled>Export STL + report</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Route view ----------------------------------------------------------------------------->
+    <section id="view-route" class="view" hidden>
+      <aside class="side">
+        <p class="muted">Plans a boulder route from generated holds: each is drilled, turned so its best grip faces the
+          climber's pull, and rated as placed. Drag holds on the wall to move them.</p>
+        <h2>1 Wall</h2>
+        <div class="grid2">
+          <label for="wall-width">Width (mm)</label><input id="wall-width" type="number" min="1000" max="20000" step="100" value="2000">
+          <label for="wall-height">Height (mm)</label><input id="wall-height" type="number" min="1500" max="20000" step="100" value="3000">
+          <label for="bolt-spacing">Bolt grid (mm)</label><input id="bolt-spacing" type="number" min="100" max="500" step="10" value="200">
+        </div>
+        <div class="slider-row"><input id="wall-angle" type="range" min="-10" max="60" step="5" value="20"><span id="wall-angle-value" class="value"></span></div>
+        <div class="presets" data-target="wall-angle">
+          <button data-value="-10">Slab</button><button data-value="0">Vertical</button><button data-value="20">20°</button><button data-value="30">30°</button><button data-value="45">45°</button>
+        </div>
+
+        <h2>2 Route</h2>
+        <div id="grades" class="grades"></div>
+        <div class="row"><span class="muted">Variation</span><input id="route-seed" type="text" value="1" aria-label="Route variation"><button id="route-random">Random</button></div>
+        <div class="grid2">
+          <label for="moves">Hand moves</label><input id="moves" type="number" min="0" max="20" value="0" title="0 = climb to the top">
+          <label for="bolt">Bolt hole (mm)</label><input id="bolt" type="number" min="0" max="20" step="0.5" value="10.5" title="0 = no holes">
+        </div>
+        <label class="check"><input id="feet" type="checkbox" checked> Foot holds</label>
+        <button id="add-route" class="primary">Add route to wall</button>
+        <div class="row"><button id="remove-route">Remove last route</button><button id="clear-wall">Clear wall</button></div>
+        <div id="route-busy" class="busy" hidden><i></i></div>
+        <p id="route-message" class="muted message">Holds already on the wall stay; new routes keep clear of them.</p>
+      </aside>
+
+      <div class="stage">
+        <div class="toolbar">
+          <span id="route-title" class="section">No routes yet: choose a grade and add a route</span>
+          <label class="muted">Colour by
+            <select id="colour-by"><option value="role">Role</option><option value="difficulty">Difficulty as placed</option><option value="route">Route</option></select>
+          </label>
+          <label class="check"><input id="labels" type="checkbox" checked> Labels</label>
+          <button id="route-reset">Reset view</button>
+        </div>
+        <div id="route-canvas" class="canvas"><div id="route-legend" class="legend-text"></div></div>
+        <div class="cards">
+          <div class="card narrow">
+            <span class="eyebrow">ROUTE</span>
+            <select id="route-pick" aria-label="Route"></select>
+            <div class="big-row"><span id="route-big" class="big">–</span><span id="route-grade" class="section"></span></div>
+            <p id="route-summary" class="muted"></p>
+          </div>
+          <div class="card wide">
+            <span class="eyebrow">HOLDS (click one, or drag it on the wall)</span>
+            <div class="table-wrap"><table id="hold-table"><thead><tr>
+              <th>Route</th><th>Role</th><th>Type</th><th>Difficulty</th><th>Grab</th><th>Turn</th><th>Across, up (mm)</th><th>Size (mm)</th>
+            </tr></thead><tbody></tbody></table></div>
+            <p id="selected-line" class="muted">Select a hold to move or turn it.</p>
+            <div class="row adjust">
+              <button data-du="-1" title="One bolt left (Ctrl+←)">←</button><button data-dv="1" title="One bolt up (Ctrl+↑)">↑</button>
+              <button data-dv="-1" title="One bolt down (Ctrl+↓)">↓</button><button data-du="1" title="One bolt right (Ctrl+→)">→</button>
+              <button data-turn="15" title="Turn 15° anticlockwise (Q)">↺15°</button><button data-turn="-15" title="Turn 15° clockwise (E)">↻15°</button>
+              <button id="face-pull" title="Turn it so its best grip faces the pull it gets on this route">Face the pull</button>
+              <input id="pos-u" type="number" step="any" aria-label="Across (mm)" title="Across the wall from its centre line; snaps to the nearest bolt">
+              <input id="pos-v" type="number" step="any" aria-label="Up (mm)" title="Up from the bottom; snaps to the nearest bolt">
+              <button id="undo" title="Undo the last move or turn (Ctrl+Z)">Undo</button>
+              <button id="inspect">Inspect in hold view</button>
+            </div>
+          </div>
+          <div class="card narrow">
+            <span class="eyebrow">EXPORT</span>
+            <p class="muted">A ZIP with each route's drilled STLs, JSON reports, route.json and route.svg, plus the wall's
+              layout.json for Blender's Rock Wall Builder add-on.</p>
+            <button id="export-wall" class="primary" disabled>Export wall</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="loading" class="loading"><div><span class="eyebrow">ROCKFORM</span><h1>Hold generator</h1>
+    <p id="loading-text">Starting…</p><div class="busy"><i></i></div>
+    <p class="muted">Everything runs in this browser tab (Python in WebAssembly). Nothing is uploaded.
+      The first visit downloads about 30 MB; later visits are faster.</p></div></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
