@@ -505,6 +505,7 @@ const fromScreen = (f, x, y) => [(f.oy - y) / f.s, (x - f.ox) / f.s];
 function drawProfile() {
   if (!P.points) return;
   const [ctx, w, h] = fitCanvas(profileCanvas);
+  if (w < 80 || h < 60) return;                  // hidden (another tab): the scale would be negative and the grid never end
   const f = P.drag ? P.frame : (P.frame = profileFrame(w, h));
   ctx.clearRect(0, 0, w, h);
   // 10 mm grid
