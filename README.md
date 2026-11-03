@@ -39,6 +39,8 @@ algorithms, data formats, internal APIs and build process, see the
 nothing to install, and nothing is uploaded. [web/](web/) runs the same Python code under Pyodide with a
 three.js 3D view. To run it locally, use `.venv\Scripts\python.exe web\build.py --serve` and open http://localhost:8000.
 
+![The browser app: generating holds by type, difficulty and wall angle, the grip heat map, a description, the profile editor, setting and editing routes, and importing a model into the library](docs/holdgen-webapp-demo.gif)
+
 ## Hold generator and route setter
 
 ```powershell
